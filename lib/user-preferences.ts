@@ -6,6 +6,7 @@ export type UserPreferences = {
   dark_mode: boolean
   dense_mode: boolean
   show_overnight_hours: boolean
+  reminder_prefs: string
   created_at: string
   updated_at: string
 }

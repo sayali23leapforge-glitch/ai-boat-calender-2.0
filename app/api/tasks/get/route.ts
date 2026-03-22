@@ -27,7 +27,41 @@ export async function GET(req: NextRequest) {
     const { data, error } = await query.order("position", { ascending: true });
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    return NextResponse.json({ data: data ?? [] });
+
+    const tasks = data ?? [];
+    if (!tasks.length) return NextResponse.json({ data: tasks });
+
+    const taskIds = tasks.map((task) => task.id);
+    const { data: reminders } = await admin
+      .from("reminders")
+      .select("task_id, scheduled_at, status, sent_at, importance_level, metadata")
+      .eq("user_id", userId)
+      .in("task_id", taskIds)
+      .order("scheduled_at", { ascending: true });
+
+    const remindersByTask = new Map<string, any[]>();
+    for (const reminder of reminders ?? []) {
+      const taskReminder = {
+        scheduled_at: reminder.scheduled_at,
+        status: reminder.status,
+        sent_at: reminder.sent_at,
+        importance_level: reminder.importance_level,
+        offset_minutes:
+          typeof reminder.metadata?.offset_minutes === "number"
+            ? reminder.metadata.offset_minutes
+            : null,
+      };
+      const current = remindersByTask.get(reminder.task_id) ?? [];
+      current.push(taskReminder);
+      remindersByTask.set(reminder.task_id, current);
+    }
+
+    const hydratedTasks = tasks.map((task) => ({
+      ...task,
+      reminder_schedule: remindersByTask.get(task.id) ?? [],
+    }));
+
+    return NextResponse.json({ data: hydratedTasks });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Failed" }, { status: 500 });
   }

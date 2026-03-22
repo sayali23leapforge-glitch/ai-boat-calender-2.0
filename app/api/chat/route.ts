@@ -163,6 +163,72 @@ type RecentEntities = {
   updatedAt?: number | null;
 };
 
+function extractReminderPreferenceInstruction(message: string): string | null {
+  const text = (message || "").trim();
+  if (!text) return null;
+
+  const lowered = text.toLowerCase();
+  const preferencePattern =
+    /\b(stop emailing me about|don't email me about|do not email me about|no email reminders for|email me about)\b/;
+
+  if (!preferencePattern.test(lowered)) {
+    return null;
+  }
+
+  return text;
+}
+
+async function appendReminderPreference(params: {
+  userId: string;
+  instruction: string;
+}) {
+  const admin = getSupabaseAdminClient();
+
+  const { data: profileExisting } = await admin
+    .from("user_profiles")
+    .select("id, reminder_prefs")
+    .eq("user_id", params.userId)
+    .maybeSingle();
+
+  const now = new Date().toISOString();
+  const line = `[${now}] ${params.instruction}`;
+  const merged = profileExisting?.reminder_prefs
+    ? `${profileExisting.reminder_prefs}\n${line}`
+    : line;
+
+  if (profileExisting?.id) {
+    await admin
+      .from("user_profiles")
+      .update({ reminder_prefs: merged })
+      .eq("id", profileExisting.id);
+    return;
+  }
+
+  // Fallback path for projects that still store reminder prefs in user_preferences.
+  const { data: legacyExisting } = await admin
+    .from("user_preferences")
+    .select("id, reminder_prefs")
+    .eq("user_id", params.userId)
+    .maybeSingle();
+
+  if (legacyExisting?.id) {
+    await admin
+      .from("user_preferences")
+      .update({
+        reminder_prefs: legacyExisting.reminder_prefs
+          ? `${legacyExisting.reminder_prefs}\n${line}`
+          : line,
+      })
+      .eq("id", legacyExisting.id);
+    return;
+  }
+
+  await admin.from("user_preferences").insert({
+    user_id: params.userId,
+    reminder_prefs: line,
+  });
+}
+
 function makeRequestId() {
   const g: any = globalThis as any;
   if (g?.crypto?.randomUUID) return g.crypto.randomUUID();
@@ -421,6 +487,27 @@ function extractDateFromUserText(text: string, tz: string): string | undefined {
   const today = getYmdInTimeZone(tz);
   if (/\btomorrow\b/.test(s)) return addDaysYmd(today, 1);
   if (/\btoday\b/.test(s)) return today;
+
+  return undefined;
+}
+
+function extractTimeFromUserText(text: string): string | undefined {
+  const s = String(text || "").toLowerCase();
+  if (!s) return undefined;
+
+  const timeMatch =
+    s.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i) ||
+    s.match(/\b(\d{1,2}:\d{2})\b/);
+
+  if (!timeMatch) return undefined;
+
+  if (timeMatch.length >= 4) {
+    return parseTimeToHHMM(`${timeMatch[1]}${timeMatch[2] ? `:${timeMatch[2]}` : ""} ${timeMatch[3]}`);
+  }
+
+  if (timeMatch.length === 2) {
+    return parseTimeToHHMM(timeMatch[1]);
+  }
 
   return undefined;
 }
@@ -887,6 +974,16 @@ export async function POST(req: NextRequest) {
         { assistantText: "Send a message to start.", toolCalls: [], requestId: rid } satisfies ChatApiResponse,
         { status: 400 }
       );
+    }
+
+    const reminderInstruction = extractReminderPreferenceInstruction(lastUserTextRaw);
+    if (userIdFromBody && reminderInstruction) {
+      appendReminderPreference({
+        userId: userIdFromBody,
+        instruction: reminderInstruction,
+      }).catch((error) => {
+        console.error("Failed to update reminder preferences:", error);
+      });
     }
 
     // Get Gemini API key from environment (Supabase table may not exist yet)
@@ -1381,13 +1478,22 @@ Keep responses concise (1-2 sentences usually).`;
         const listName = (item.listName && item.listName.trim()) || inferListNameHeuristic(item.title, item.notes);
 
         console.log("[/api/chat] Creating task:", { title: item.title, normalized: normalizedTitle });
+        const resolvedDueDate =
+          resolveDateToken((item as any).dueDate, tz) ||
+          extractDateFromUserText(lastUserText, tz) ||
+          undefined;
+        const resolvedDueTime =
+          normalizeHHMM((item as any).dueTime || (item as any).time) ||
+          extractTimeFromUserText(lastUserText) ||
+          undefined;
+
         pushClient({
           name: "create_task",
           arguments: {
             title: item.title,
             notes: item.notes,
-            dueDate: item.dueDate,
-            dueTime: item.dueTime,
+            dueDate: resolvedDueDate,
+            dueTime: resolvedDueTime,
             priority: item.priority,
             estimatedHours: item.estimatedHours,
             location: item.location,

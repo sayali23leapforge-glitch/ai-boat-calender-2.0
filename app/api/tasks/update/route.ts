@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
+import { queueTaskGmailReminders } from "@/lib/reminders";
 
 // List of columns that should always exist
 const CORE_FIELDS = [
@@ -68,11 +69,63 @@ export async function POST(req: NextRequest) {
         if (retryError) {
           return NextResponse.json({ error: retryError.message }, { status: 500 });
         }
+        if (retryData?.id && retryData?.user_id) {
+          try {
+            await admin
+              .from("reminders")
+              .delete()
+              .eq("task_id", taskId)
+              .in("status", ["PENDING", "PROCESSING", "FAILED"]);
+
+            await queueTaskGmailReminders({
+              admin,
+              userId: retryData.user_id,
+              taskId: retryData.id,
+              title: String(retryData.title || ""),
+              notes: String(retryData.notes || ""),
+              dueDate: retryData.due_date || null,
+              dueTime: retryData.due_time || null,
+              clientTimezone:
+                typeof retryData.metadata?.client_timezone === "string"
+                  ? retryData.metadata.client_timezone
+                  : "UTC",
+            });
+          } catch (reminderError) {
+            console.error("Failed to refresh task reminders after update:", reminderError);
+          }
+        }
+
         return NextResponse.json({ data: retryData });
       }
       
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
+    if (data?.id && data?.user_id) {
+      try {
+        await admin
+          .from("reminders")
+          .delete()
+          .eq("task_id", taskId)
+          .in("status", ["PENDING", "PROCESSING", "FAILED"]);
+
+        await queueTaskGmailReminders({
+          admin,
+          userId: data.user_id,
+          taskId: data.id,
+          title: String(data.title || ""),
+          notes: String(data.notes || ""),
+          dueDate: data.due_date || null,
+          dueTime: data.due_time || null,
+          clientTimezone:
+            typeof data.metadata?.client_timezone === "string"
+              ? data.metadata.client_timezone
+              : "UTC",
+        });
+      } catch (reminderError) {
+        console.error("Failed to refresh task reminders after update:", reminderError);
+      }
+    }
+
     return NextResponse.json({ data });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "Failed" }, { status: 500 });

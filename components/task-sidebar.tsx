@@ -4,8 +4,7 @@ import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Plus, CheckSquare, Star, Eye, EyeOff, ChevronDown, ChevronRight } from "lucide-react"
-import { supabase } from "@/lib/supabase"
+import { Plus, CheckSquare, Star, Eye, EyeOff, ChevronDown, ChevronRight, PanelLeftClose, PanelLeftOpen } from "lucide-react"
 import { getTaskLists, createTaskList, toggleListVisibility, type TaskList } from "@/lib/task-lists"
 import { getTasks } from "@/lib/tasks"
 import { toast } from "sonner"
@@ -14,9 +13,17 @@ interface TaskSidebarProps {
   userId: string
   activeFilter: string
   onFilterChange: (filter: string) => void
+  isCollapsed: boolean
+  onToggleCollapse: () => void
 }
 
-export function TaskSidebar({ userId, activeFilter, onFilterChange }: TaskSidebarProps) {
+export function TaskSidebar({
+  userId,
+  activeFilter,
+  onFilterChange,
+  isCollapsed,
+  onToggleCollapse,
+}: TaskSidebarProps) {
   const [lists, setLists] = useState<TaskList[]>([])
   const [taskCounts, setTaskCounts] = useState<Record<string, number>>({})
   const [isCreatingList, setIsCreatingList] = useState(false)
@@ -28,60 +35,20 @@ export function TaskSidebar({ userId, activeFilter, onFilterChange }: TaskSideba
   useEffect(() => {
     if (!userId) return
     loadLists()
-    loadCounts()
-
-    // Subscribe to real-time task changes
-    const taskChannel = supabase
-      .channel(`tasks-user-${userId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'tasks',
-          filter: `user_id=eq.${userId}`,
-        },
-        () => {
-          console.log('✨ New task created via iMessage! Refreshing...')
-          loadCounts()
-        }
-      )
-      .subscribe()
-
-    const listChannel = supabase
-      .channel(`task-lists-user-${userId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'task_lists',
-          filter: `user_id=eq.${userId}`,
-        },
-        () => {
-          console.log('✨ New task list created! Refreshing...')
-          loadLists()
-        }
-      )
-      .subscribe()
-
-    return () => {
-      supabase.removeChannel(taskChannel)
-      supabase.removeChannel(listChannel)
-    }
   }, [userId])
 
   const loadLists = async () => {
     try {
       const data = await getTaskLists(userId)
       setLists(data)
+      await loadCounts(data)
     } catch (error) {
       console.error('Error loading task lists:', error)
       toast.error('Failed to load task lists')
     }
   }
 
-  const loadCounts = async () => {
+  const loadCounts = async (listsData?: TaskList[]) => {
     try {
       const allTasks = await getTasks(userId, { isCompleted: false })
       setAllTasksCount(allTasks.length)
@@ -90,7 +57,8 @@ export function TaskSidebar({ userId, activeFilter, onFilterChange }: TaskSideba
       setStarredCount(starredTasks.length)
 
       const counts: Record<string, number> = {}
-      for (const list of lists) {
+      const sourceLists = listsData ?? lists
+      for (const list of sourceLists) {
         const listTasks = await getTasks(userId, { listId: list.id, isCompleted: false })
         counts[list.id] = listTasks.length
       }
@@ -111,6 +79,7 @@ export function TaskSidebar({ userId, activeFilter, onFilterChange }: TaskSideba
       setNewListName("")
       setIsCreatingList(false)
       await loadLists()
+      await loadCounts()
       toast.success('List created')
     } catch (error) {
       console.error('Error creating list:', error)
@@ -122,6 +91,7 @@ export function TaskSidebar({ userId, activeFilter, onFilterChange }: TaskSideba
     try {
       await toggleListVisibility(listId, !currentVisibility)
       await loadLists()
+      await loadCounts()
     } catch (error) {
       console.error('Error toggling visibility:', error)
       toast.error('Failed to update list visibility')
@@ -129,23 +99,27 @@ export function TaskSidebar({ userId, activeFilter, onFilterChange }: TaskSideba
   }
 
   return (
-    <div className="w-64 bg-white border-r border-gray-200 flex flex-col h-full">
-      <div className="p-4 border-b border-gray-200">
-        <h1 className="text-xl font-semibold text-gray-900 mb-3">Tasks</h1>
+    <div className={`${isCollapsed ? "w-16" : "w-72"} bg-white border-r border-gray-200 flex flex-col h-full transition-all duration-200`}>
+      <div className="p-3 border-b border-gray-200 flex items-center justify-between">
+        {!isCollapsed && <h1 className="text-lg font-semibold text-gray-900">Tasks</h1>}
+        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onToggleCollapse}>
+          {isCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+        </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+      <div className={`flex-1 overflow-y-auto ${isCollapsed ? "p-2 space-y-2" : "p-4 space-y-6"}`}>
         <div className="space-y-1">
           <Button
             variant="ghost"
-            className={`w-full justify-start text-sm font-normal ${
+            className={`w-full ${isCollapsed ? "justify-center px-0" : "justify-start"} text-sm font-normal ${
               activeFilter === "all" ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-100"
             }`}
             onClick={() => onFilterChange("all")}
+            title="All Tasks"
           >
-            <CheckSquare className="h-4 w-4 mr-3" />
-            All Tasks
-            {allTasksCount > 0 && (
+            <CheckSquare className={`h-4 w-4 ${isCollapsed ? "" : "mr-3"}`} />
+            {!isCollapsed && "All Tasks"}
+            {!isCollapsed && allTasksCount > 0 && (
               <Badge variant="secondary" className="ml-auto bg-gray-100 text-gray-700">
                 {allTasksCount}
               </Badge>
@@ -153,14 +127,15 @@ export function TaskSidebar({ userId, activeFilter, onFilterChange }: TaskSideba
           </Button>
           <Button
             variant="ghost"
-            className={`w-full justify-start text-sm font-normal ${
+            className={`w-full ${isCollapsed ? "justify-center px-0" : "justify-start"} text-sm font-normal ${
               activeFilter === "starred" ? "bg-blue-50 text-blue-700" : "text-gray-700 hover:bg-gray-100"
             }`}
             onClick={() => onFilterChange("starred")}
+            title="Starred"
           >
-            <Star className="h-4 w-4 mr-3" />
-            Starred
-            {starredCount > 0 && (
+            <Star className={`h-4 w-4 ${isCollapsed ? "" : "mr-3"}`} />
+            {!isCollapsed && "Starred"}
+            {!isCollapsed && starredCount > 0 && (
               <Badge variant="secondary" className="ml-auto bg-gray-100 text-gray-700">
                 {starredCount}
               </Badge>
@@ -168,6 +143,7 @@ export function TaskSidebar({ userId, activeFilter, onFilterChange }: TaskSideba
           </Button>
         </div>
 
+        {!isCollapsed && (
         <div className="space-y-2">
           <div className="flex items-center justify-between px-2">
             <button
@@ -262,6 +238,7 @@ export function TaskSidebar({ userId, activeFilter, onFilterChange }: TaskSideba
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   )

@@ -6,7 +6,7 @@ import { TaskSidebar } from "./task-sidebar"
 import { TaskDetailDialog } from "./task-detail-dialog"
 import { supabase } from "@/lib/supabase"
 import { getTaskLists, deleteTaskList, type TaskList } from "@/lib/task-lists"
-import { getTasks, createTask, updateTask, deleteTask, toggleTaskComplete, toggleTaskStarred, type Task, type TaskPriority } from "@/lib/tasks"
+import { getTasks, createTask, updateTask, deleteTask, toggleTaskComplete, toggleTaskStarred, type Task } from "@/lib/tasks"
 import { toast } from "sonner"
 import {
   AlertDialog,
@@ -26,6 +26,7 @@ interface TasksViewProps {
 
 export function TasksView({ userId }: TasksViewProps) {
   const [activeFilter, setActiveFilter] = useState('all')
+  const [isTaskSidebarCollapsed, setIsTaskSidebarCollapsed] = useState(false)
   const [lists, setLists] = useState<TaskList[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -98,10 +99,30 @@ export function TasksView({ userId }: TasksViewProps) {
     }
   }
 
-  const handleAddTask = async (listId: string, title: string, options?: { priority?: TaskPriority }) => {
+  const handleAddTask = async (
+    listId: string,
+    title: string,
+    options?: {
+      notes?: string
+      dueDate?: string
+      dueTime?: string
+      isStarred?: boolean
+      estimatedHours?: number | null
+      progress?: number
+      goal?: string
+      location?: string
+    }
+  ): Promise<boolean> => {
     try {
       const newTask = await createTask(userId, listId, title, {
-        priority: options?.priority,
+        notes: options?.notes,
+        dueDate: options?.dueDate,
+        dueTime: options?.dueTime,
+        isStarred: options?.isStarred,
+        estimatedHours: options?.estimatedHours,
+        progress: options?.progress,
+        goal: options?.goal,
+        location: options?.location,
       })
       setTasks(prev => [...prev, newTask])
       toast.success('Task created', { duration: 2000 })
@@ -110,9 +131,11 @@ export function TasksView({ userId }: TasksViewProps) {
       setTimeout(() => {
         loadData()
       }, 500)
+      return true
     } catch (error) {
       console.error('Error creating task:', error)
       toast.error('Failed to create task')
+      return false
     }
   }
 
@@ -144,20 +167,22 @@ export function TasksView({ userId }: TasksViewProps) {
     }
   }
 
-  const handleUpdateTask = async (taskId: string, updates: Partial<Task>) => {
+  const handleUpdateTask = async (taskId: string, updates: Partial<Task>): Promise<boolean> => {
     try {
       await updateTask(taskId, updates)
       setTasks(prev =>
         prev.map(t => t.id === taskId ? { ...t, ...updates } : t)
       )
       toast.success('Task updated')
+      return true
     } catch (error) {
       console.error('Error updating task:', error)
       toast.error('Failed to update task')
+      return false
     }
   }
 
-  const handleDeleteTask = async (taskId: string) => {
+  const handleDeleteTask = async (taskId: string): Promise<boolean> => {
     try {
       setIsDeleting(true)
       // Close the dialog first
@@ -170,11 +195,13 @@ export function TasksView({ userId }: TasksViewProps) {
       await deleteTask(taskId)
       
       toast.success('Task deleted', { duration: 2000 })
+      return true
     } catch (error) {
       console.error('Error deleting task:', error)
       toast.error('Failed to delete task')
       // Reload data on error to get accurate state
       await loadData()
+      return false
     } finally {
       setIsDeleting(false)
     }
@@ -206,7 +233,8 @@ export function TasksView({ userId }: TasksViewProps) {
 
   const getFilteredLists = () => {
     if (activeFilter === 'all') {
-      return lists.filter(l => l.is_visible)
+      // In "All Tasks", include all lists so hidden-state doesn't block task workflows.
+      return lists
     }
     if (activeFilter === 'starred') {
       return []
@@ -234,51 +262,28 @@ export function TasksView({ userId }: TasksViewProps) {
 
   const filteredLists = getFilteredLists()
 
+  useEffect(() => {
+    // If currently selected list no longer exists, fall back to "all".
+    if (activeFilter.startsWith('list:')) {
+      const listId = activeFilter.replace('list:', '')
+      const exists = lists.some(l => l.id === listId)
+      if (!exists) {
+        setActiveFilter('all')
+      }
+    }
+  }, [activeFilter, lists])
+
   return (
-    <div className="flex h-screen bg-background">
-      {/* Desktop Sidebar - Hidden on mobile */}
-      {!isMobile && (
-        <TaskSidebar
-          userId={userId}
-          activeFilter={activeFilter}
-          onFilterChange={setActiveFilter}
-        />
-      )}
+    <div className="flex h-full bg-background">
+      <TaskSidebar
+        userId={userId}
+        activeFilter={activeFilter}
+        onFilterChange={setActiveFilter}
+        isCollapsed={isTaskSidebarCollapsed}
+        onToggleCollapse={() => setIsTaskSidebarCollapsed((prev) => !prev)}
+      />
 
-      <main className="flex-1 overflow-auto p-4 md:p-6">
-        {/* Mobile Filter Bar - Only on mobile */}
-        {isMobile && (
-          <div className="mb-4 pb-4 border-b border-border/50">
-            <div className="flex gap-2 overflow-x-auto pb-2 -mx-4 px-4">
-              <Button
-                variant={activeFilter === 'all' ? 'default' : 'outline'}
-                onClick={() => setActiveFilter('all')}
-                className="flex-shrink-0 whitespace-nowrap h-8 text-xs"
-              >
-                All Tasks
-              </Button>
-              <Button
-                variant={activeFilter === 'starred' ? 'default' : 'outline'}
-                onClick={() => setActiveFilter('starred')}
-                className="flex-shrink-0 whitespace-nowrap h-8 text-xs"
-              >
-                Starred
-              </Button>
-              {lists.map(list => (
-                <Button
-                  key={list.id}
-                  variant={activeFilter === `list:${list.id}` ? 'default' : 'outline'}
-                  onClick={() => setActiveFilter(`list:${list.id}`)}
-                  className="flex-shrink-0 whitespace-nowrap h-8 text-xs"
-                  style={activeFilter === `list:${list.id}` ? { background: list.color } : {}}
-                >
-                  {list.name}
-                </Button>
-              ))}
-            </div>
-          </div>
-        )}
-
+      <main className="flex-1 overflow-auto p-4 md:p-5">
         {isLoading ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center animate-in-smooth">
@@ -287,8 +292,8 @@ export function TasksView({ userId }: TasksViewProps) {
             </div>
           </div>
         ) : activeFilter === 'starred' ? (
-          <div className="max-w-4xl mx-auto">
-            <h1 className="text-2xl md:text-3xl font-bold text-foreground mb-6">Starred Tasks</h1>
+          <div className="max-w-6xl mx-auto">
+            <h1 className="text-3xl font-bold text-foreground mb-6">Starred Tasks</h1>
             {getStarredTasks().length === 0 ? (
               <div className="text-center py-12">
                 <p className="text-muted-foreground text-lg">No starred tasks</p>
@@ -324,7 +329,7 @@ export function TasksView({ userId }: TasksViewProps) {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6 auto-rows-min">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4 md:gap-5 auto-rows-min">
             {filteredLists.map((list, index) => (
               <div key={list.id} className="animate-in-smooth" style={{ animationDelay: `${index * 0.05}s` }}>
                 <TaskListCard
