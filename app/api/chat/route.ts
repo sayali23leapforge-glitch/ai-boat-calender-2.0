@@ -1322,24 +1322,51 @@ Keep responses concise (1-2 sentences usually).`;
         .trim();
     };
 
-    // Aggressive deduplication: filter by normalized title + kind + dueDate
+    const normalizeDateForKey = (value?: string | null): string => {
+      const raw = String(value || "").trim().toLowerCase();
+      if (!raw) return "";
+      if (raw === "today") return getYmdInTimeZone(tz);
+      if (raw === "tomorrow") return addDaysYmd(getYmdInTimeZone(tz), 1);
+      const match = raw.match(/\d{4}-\d{2}-\d{2}/);
+      return match?.[0] || raw;
+    };
+
+    const normalizeTimeForKey = (value?: string | null): string => {
+      if (!value) return "";
+      return parseTimeToHHMM(value) || String(value).trim().toLowerCase();
+    };
+
+    const makeTaskSignature = (title: string, dueDate?: string | null, dueTime?: string | null): string =>
+      `${normalizeTitle(title)}|${normalizeDateForKey(dueDate)}|${normalizeTimeForKey(dueTime)}`;
+
+    const makeEventSignature = (title: string, date?: string | null, time?: string | null): string =>
+      `${normalizeTitle(title)}|${normalizeDateForKey(date)}|${normalizeTimeForKey(time)}`;
+
+    // Aggressive deduplication: filter by normalized title + kind + dueDate + dueTime
     const seenItems = new Set<string>();
     const originalItemCount = plan.items.length;
     
     plan.items = plan.items.filter((item: any) => {
       if (!item || !item.title || !item.kind) return true; // Keep items without required fields
       
-      const normalizedTitle = normalizeTitle(item.title);
       const itemKind = item.kind;
-      const dueDate = item.dueDate || item.date || '';
-      const itemKey = `${itemKind}:${normalizedTitle}:${dueDate}`;
+      const dueDate = item.dueDate || item.date || "";
+      const dueTime = item.dueTime || item.time || "";
+      const itemSignature =
+        itemKind === "task"
+          ? makeTaskSignature(item.title, dueDate, dueTime)
+          : itemKind === "event"
+          ? makeEventSignature(item.title, dueDate, dueTime)
+          : normalizeTitle(item.title);
+      const itemKey = `${itemKind}:${itemSignature}`;
       
       if (seenItems.has(itemKey)) {
         console.log("[/api/chat] FILTERED DUPLICATE:", { 
           kind: itemKind, 
           title: item.title,
-          normalized: normalizedTitle,
+          signature: itemSignature,
           dueDate,
+          dueTime,
           itemKey 
         });
         return false;
@@ -1356,10 +1383,10 @@ Keep responses concise (1-2 sentences usually).`;
     });
 
     // Extract all previously created items from database (not messages)
-    const extractPreviouslyCreatedItems = async (userId: string): Promise<{ taskTitles: Set<string>; goalTitles: Set<string>; eventTitles: Set<string> }> => {
-      const taskTitles = new Set<string>();
+    const extractPreviouslyCreatedItems = async (userId: string): Promise<{ taskSignatures: Set<string>; goalTitles: Set<string>; eventSignatures: Set<string> }> => {
+      const taskSignatures = new Set<string>();
       const goalTitles = new Set<string>();
-      const eventTitles = new Set<string>();
+      const eventSignatures = new Set<string>();
 
       try {
         const admin = getSupabaseAdminClient();
@@ -1368,13 +1395,15 @@ Keep responses concise (1-2 sentences usually).`;
         // Query recently created tasks (last hour)
         const { data: tasks, error: tasksError } = await admin
           .from('tasks')
-          .select('title')
+          .select('title,due_date,due_time')
           .eq('user_id', userId)
           .gt('created_at', oneHourAgo);
 
         if (!tasksError && tasks) {
           tasks.forEach((task: any) => {
-            if (task.title) taskTitles.add(normalizeTitle(task.title));
+            if (task.title) {
+              taskSignatures.add(makeTaskSignature(task.title, task.due_date, task.due_time));
+            }
           });
         }
 
@@ -1394,38 +1423,40 @@ Keep responses concise (1-2 sentences usually).`;
         // Query recently created events (last hour)
         const { data: events, error: eventsError } = await admin
           .from('calendar_events')
-          .select('title')
+          .select('title,event_date,start_time')
           .eq('user_id', userId)
           .gt('created_at', oneHourAgo);
 
         if (!eventsError && events) {
           events.forEach((event: any) => {
-            if (event.title) eventTitles.add(normalizeTitle(event.title));
+            if (event.title) {
+              eventSignatures.add(makeEventSignature(event.title, event.event_date, event.start_time));
+            }
           });
         }
 
         console.log("[/api/chat] Previously created items from database:", {
-          taskCount: taskTitles.size,
+          taskCount: taskSignatures.size,
           goalCount: goalTitles.size,
-          eventCount: eventTitles.size,
-          tasks: Array.from(taskTitles),
+          eventCount: eventSignatures.size,
+          tasks: Array.from(taskSignatures),
           goals: Array.from(goalTitles),
-          events: Array.from(eventTitles)
+          events: Array.from(eventSignatures)
         });
       } catch (err) {
         console.error("[/api/chat] Error extracting previously created items:", err);
       }
 
-      return { taskTitles, goalTitles, eventTitles };
+      return { taskSignatures, goalTitles, eventSignatures };
     };
 
-    const { taskTitles: prevTaskTitles, goalTitles: prevGoalTitles, eventTitles: prevEventTitles } = await extractPreviouslyCreatedItems(userIdFromBody);
+    const { taskSignatures: prevTaskSignatures, goalTitles: prevGoalTitles, eventSignatures: prevEventSignatures } = await extractPreviouslyCreatedItems(userIdFromBody);
 
     const clientToolCalls: ToolCall[] = [];
     const serverToolCalls: Array<{ name: ToolCall["name"]; arguments: any }> = [];
-    const processedTaskTitles = new Set<string>([...prevTaskTitles]); // Track created tasks + previously created
+    const processedTaskSignatures = new Set<string>([...prevTaskSignatures]); // Track created tasks + previously created
     const processedGoalTitles = new Set<string>([...prevGoalTitles]); // Track created goals + previously created
-    const processedEventTitles = new Set<string>([...prevEventTitles]); // Track created events + previously created
+    const processedEventSignatures = new Set<string>([...prevEventSignatures]); // Track created events + previously created
 
     function pushClient(tc: ToolCall) {
       clientToolCalls.push(tc);
@@ -1464,20 +1495,6 @@ Keep responses concise (1-2 sentences usually).`;
       }
 
       if (item.kind === "task") {
-        // Deduplicate: use normalized title for comparison
-        const normalizedTitle = normalizeTitle(item.title || "");
-        if (processedTaskTitles.has(normalizedTitle)) {
-          console.log("[/api/chat] SKIPPING PROCESSED TASK:", { 
-            title: item.title, 
-            normalized: normalizedTitle 
-          });
-          continue;
-        }
-        processedTaskTitles.add(normalizedTitle);
-
-        const listName = (item.listName && item.listName.trim()) || inferListNameHeuristic(item.title, item.notes);
-
-        console.log("[/api/chat] Creating task:", { title: item.title, normalized: normalizedTitle });
         const resolvedDueDate =
           resolveDateToken((item as any).dueDate, tz) ||
           extractDateFromUserText(lastUserText, tz) ||
@@ -1486,6 +1503,22 @@ Keep responses concise (1-2 sentences usually).`;
           normalizeHHMM((item as any).dueTime || (item as any).time) ||
           extractTimeFromUserText(lastUserText) ||
           undefined;
+        const taskSignature = makeTaskSignature(item.title || "", resolvedDueDate, resolvedDueTime);
+
+        if (processedTaskSignatures.has(taskSignature)) {
+          console.log("[/api/chat] SKIPPING PROCESSED TASK:", { 
+            title: item.title, 
+            taskSignature,
+            dueDate: resolvedDueDate,
+            dueTime: resolvedDueTime,
+          });
+          continue;
+        }
+        processedTaskSignatures.add(taskSignature);
+
+        const listName = (item.listName && item.listName.trim()) || inferListNameHeuristic(item.title, item.notes);
+
+        console.log("[/api/chat] Creating task:", { title: item.title, taskSignature });
 
         pushClient({
           name: "create_task",
@@ -1529,18 +1562,17 @@ Keep responses concise (1-2 sentences usually).`;
         (item as any).endTime = end;
 
         // Deduplicate: use normalized title + date + time for comparison
-        const normalizedTitle = normalizeTitle(item.title || "");
-        const eventKey = `${normalizedTitle}:${resolvedDate}:${start}`;
-        if (processedEventTitles.has(eventKey)) {
+        const eventSignature = makeEventSignature(item.title || "", resolvedDate, start);
+        if (processedEventSignatures.has(eventSignature)) {
           console.log("[/api/chat] SKIPPING PROCESSED EVENT:", { 
             title: item.title, 
-            normalized: normalizedTitle,
+            eventSignature,
             date: resolvedDate,
             time: start
           });
           continue;
         }
-        processedEventTitles.add(eventKey);
+        processedEventSignatures.add(eventSignature);
 
         if (resolvedDate && start) {
           pushServer("detect_event_conflicts", {
@@ -1548,7 +1580,7 @@ Keep responses concise (1-2 sentences usually).`;
           });
         }
 
-        console.log("[/api/chat] Creating event:", { title: item.title, normalized: normalizedTitle, date: resolvedDate, time: start });
+        console.log("[/api/chat] Creating event:", { title: item.title, eventSignature, date: resolvedDate, time: start });
         pushClient({
           name: "create_event",
           arguments: {

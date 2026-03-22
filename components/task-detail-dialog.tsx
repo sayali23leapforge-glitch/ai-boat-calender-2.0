@@ -80,7 +80,7 @@ export function TaskDetailDialog({ task, isOpen, onClose, onUpdate, onDelete }: 
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[525px]">
+      <DialogContent className="sm:max-w-[525px] max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <div className="flex items-center justify-between">
             <DialogTitle>Edit Task</DialogTitle>

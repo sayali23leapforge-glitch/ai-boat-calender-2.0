@@ -56,17 +56,16 @@ function formatTimeLabel(timeValue?: string | null): string {
 
 function formatDuePartForEmail(dueDate?: string | null, dueTime?: string | null): string {
   if (!dueDate) return "No due date";
-  const dateMatch = dueDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!dateMatch) {
-    return dueTime ? `${dueDate} at ${formatTimeLabel(dueTime)}` : dueDate;
-  }
+  const dateSource = String(dueDate).trim();
+  const dateMatch = dateSource.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!dateMatch) return dueTime ? `${dateSource} at ${formatTimeLabel(dueTime)}` : dateSource;
 
   const year = Number(dateMatch[1]);
   const month = Number(dateMatch[2]) - 1;
   const day = Number(dateMatch[3]);
-  const asDate = new Date(Date.UTC(year, month, day));
+  const asDate = new Date(year, month, day);
   const dateLabel = Number.isNaN(asDate.getTime())
-    ? dueDate
+    ? dateSource
     : new Intl.DateTimeFormat("en-US", {
         weekday: "short",
         month: "short",
@@ -201,8 +200,7 @@ Deno.serve(async (req: Request) => {
       Deno.env.get("SUPABASE_URL") || TEST_DEFAULTS.SUPABASE_URL;
     // User-requested behavior: always use this hardcoded key in testing.
     const resendApiKey = TEST_DEFAULTS.RESEND_API_KEY;
-    const fromEmail =
-      Deno.env.get("REMINDER_FROM_EMAIL") || TEST_DEFAULTS.REMINDER_FROM_EMAIL;
+    const fromEmail = TEST_DEFAULTS.REMINDER_FROM_EMAIL;
     const fromName = Deno.env.get("REMINDER_FROM_NAME") || "Calendar Reminders";
     const fromHeaderRaw = fromEmail.includes("<")
       ? fromEmail
@@ -214,7 +212,7 @@ Deno.serve(async (req: Request) => {
       usingFallbacks: {
         supabaseUrl: !Deno.env.get("SUPABASE_URL"),
         resendApiKey: true,
-        fromEmail: !Deno.env.get("REMINDER_FROM_EMAIL"),
+        fromEmail: true,
         appBaseUrl: !Deno.env.get("APP_BASE_URL"),
       },
       appBaseUrl,
@@ -329,18 +327,6 @@ Deno.serve(async (req: Request) => {
       const safeReason = reminder.importance_reason
         ? escapeHtml(reminder.importance_reason)
         : "";
-      const scheduledFor = new Date(reminder.scheduled_at);
-      const scheduledForLabel = Number.isNaN(scheduledFor.getTime())
-        ? reminder.scheduled_at
-        : new Intl.DateTimeFormat("en-US", {
-            weekday: "short",
-            month: "short",
-            day: "numeric",
-            hour: "numeric",
-            minute: "2-digit",
-          }).format(scheduledFor);
-      const safeScheduledFor = escapeHtml(scheduledForLabel);
-
       const subject = `Reminder: ${task.title}`;
       const html = `
         <div style="margin:0;padding:0;background:#f2f5fb;">
@@ -361,12 +347,6 @@ Deno.serve(async (req: Request) => {
                           <td style="padding:14px 16px;">
                             <div style="font-size:12px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#52698d;margin-bottom:6px;">Due</div>
                             <div style="font-size:16px;font-weight:600;color:#132745;">${safeDuePart}</div>
-                          </td>
-                        </tr>
-                        <tr>
-                          <td style="padding:0 16px 14px;">
-                            <div style="font-size:12px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#52698d;margin-bottom:6px;">Scheduled For</div>
-                            <div style="font-size:14px;font-weight:500;color:#263d61;">${safeScheduledFor}</div>
                           </td>
                         </tr>
                       </table>
