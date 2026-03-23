@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: calendar-app
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        scope: build,runtime
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        scope: build,runtime
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        scope: runtime
+      - key: OPENAI_API_KEY
+        scope: runtime
+      - key: NODE_ENV
+        value: production
+        scope: build,runtime
+      - key: NEXT_PUBLIC_WEBHOOK_URL
+        value: https://calender-2-1.onrender.com
+        scope: build,runtime
+      - key: NEXT_PUBLIC_BLUEBUBBLES_BASE_URL
+        value: https://merit-remote-motion-statements.trycloudflare.com
+        scope: build,runtime
+      - key: NEXT_PUBLIC_BLUEBUBBLES_SOCKET_URL
+        value: wss://merit-remote-motion-statements.trycloudflare.com
+        scope: build,runtime
