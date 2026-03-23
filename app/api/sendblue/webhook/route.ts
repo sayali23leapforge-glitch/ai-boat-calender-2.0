@@ -233,68 +233,37 @@ async function sendBlooMessage(toPhone: string, message: string): Promise<boolea
       abortController.abort();
     }, 15000);
 
-    // Try multiple payload formats in case Bloo API expects different structure
-    const payloads = [
-      // Format 1: Simple text (what we currently use)
-      { text: message },
-      // Format 2: With sender info
-      { 
-        text: message,
-        sender: "+14245134881",
-        receiverAddress: normalizedPhone 
+    const url = `https://backend.blooio.com/v2/api/chats/${normalizedPhone}/messages`;
+    console.log("[BlooWebhook] 🔗 API endpoint:", url);
+
+    // Single payload format - the correct one for Bloo
+    const payload = { text: message };
+    console.log("[BlooWebhook] 📦 Payload:", JSON.stringify(payload));
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${BLOO_API_KEY}`,
+        "Content-Type": "application/json",
       },
-      // Format 3: Alternative structure
-      { 
-        message: message,
-        recipientAddress: normalizedPhone 
-      }
-    ];
+      body: JSON.stringify(payload),
+      signal: abortController.signal,
+    });
 
-    let lastError: any = null;
+    clearTimeout(timeoutId);
 
-    for (let i = 0; i < payloads.length; i++) {
-      try {
-        const payload = payloads[i];
-        const url = `https://backend.blooio.com/v2/api/chats/${normalizedPhone}/messages`;
-        
-        console.log(`[BlooWebhook] 🔗 Trying payload format ${i + 1}:`, JSON.stringify(payload).substring(0, 100));
+    console.log("[BlooWebhook] Response status:", response.status);
 
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${BLOO_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-          signal: abortController.signal,
-        });
-
-        clearTimeout(timeoutId);
-        console.log(`[BlooWebhook] Response status (format ${i + 1}):`, response.status);
-
-        if (response.ok) {
-          const data = await response.json();
-          console.log("[BlooWebhook] ✅ Bloo message sent successfully:", data);
-          return true;
-        } else if (response.status === 202 || response.status === 200) {
-          // 202 = Accepted/Queued, 200 = OK
-          const data = await response.json().catch(() => ({}));
-          console.log(`[BlooWebhook] ✅ Bloo API accepted (status ${response.status}):`, data);
-          return true;
-        } else {
-          const errorText = await response.text();
-          console.log(`[BlooWebhook] Format ${i + 1} failed (${response.status}):`, errorText.substring(0, 200));
-          lastError = { status: response.status, error: errorText };
-        }
-      } catch (err: any) {
-        console.error(`[BlooWebhook] Format ${i + 1} error:`, err?.message);
-        lastError = err;
-      }
+    if (response.ok || response.status === 202) {
+      // 200 OK or 202 Accepted
+      const data = await response.json().catch(() => ({}));
+      console.log("[BlooWebhook] ✅ Bloo message sent successfully:", data);
+      return true;
+    } else {
+      const error = await response.text();
+      console.log("[BlooWebhook] ❌ Bloo API error (status " + response.status + "):", error.substring(0, 200));
+      return false;
     }
-
-    console.error("[BlooWebhook] ❌ All payload formats failed. Last error:", lastError);
-    return false;
-
   } catch (error: any) {
     console.error("[BlooWebhook] ❌ Error sending message:", error?.message || error);
     return false;
