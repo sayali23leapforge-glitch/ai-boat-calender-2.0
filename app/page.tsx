@@ -89,20 +89,9 @@ export default function HomePage() {
   }
 
   return (
-    <div className="flex h-screen bg-background overflow-hidden flex-col md:flex-row">
-      {/* Sidebar - Hidden on mobile, visible on desktop */}
-      <div className="hidden md:flex md:w-64 md:flex-col">
-        <Sidebar 
-          activeView={activeView} 
-          onViewChange={setActiveView}
-          userId={userId}
-          onRefresh={handleRefresh}
-          onSignOut={signOut}
-        />
-      </div>
-      
+    <div className="flex h-screen bg-background overflow-hidden flex-col-reverse md:flex-row">
       {/* Mobile Bottom Navigation */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-background border-t border-border/50 glass-strong backdrop-blur-xl z-50">
+      <div className="md:hidden w-full bg-background border-t border-border/50 glass-strong backdrop-blur-xl z-50 flex-shrink-0">
         <div className="flex justify-around h-16 items-center">
           <button 
             onClick={() => setActiveView('tasks')}
@@ -151,8 +140,8 @@ export default function HomePage() {
         </div>
       </div>
       
-      {/* Main Content - Adjusted for mobile bottom nav */}
-      <main className="flex-1 overflow-hidden relative md:pb-0 pb-16">
+      {/* Main Content - Full width on mobile, flex-1 on desktop */}
+      <main className="flex-1 overflow-hidden relative w-full md:w-auto">
         {renderView()}
         {/* POC: Chatbot can switch views + alert + console.log via function calling */}
         <ChatWidget 
@@ -166,6 +155,17 @@ export default function HomePage() {
           }}
         />
       </main>
+
+      {/* Sidebar - Hidden on mobile, visible on desktop */}
+      <div className="hidden md:flex md:w-64 md:flex-col md:flex-shrink-0">
+        <Sidebar 
+          activeView={activeView} 
+          onViewChange={setActiveView}
+          userId={userId}
+          onRefresh={handleRefresh}
+          onSignOut={signOut}
+        />
+      </div>
     </div>
   )
 }
