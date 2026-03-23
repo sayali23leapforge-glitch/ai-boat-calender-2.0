@@ -157,7 +157,7 @@ export default function HomePage() {
         </div>
 
         {/* ChatWidget - Always visible, positioned at bottom on mobile */}
-        <div className={isMobile ? 'fixed bottom-16 right-0 z-10' : 'absolute bottom-0 right-0 z-10'}>
+        <div className={isMobile ? 'fixed bottom-0 right-0 z-10' : 'absolute bottom-0 right-0 z-10'}>
           <ChatWidget 
             onSetActiveView={handleViewChange} 
             userId={userId}
@@ -168,58 +168,6 @@ export default function HomePage() {
             }}
           />
         </div>
-
-        {/* Mobile Bottom Navigation */}
-        {isMobile && (
-          <div className="w-full bg-background border-t border-border/50 glass-strong backdrop-blur-xl z-50 flex-shrink-0">
-            <div className="flex justify-around h-16 items-center">
-              <button 
-                onClick={() => handleViewChange('tasks')}
-                className={`flex-1 flex flex-col items-center justify-center gap-1 py-2 text-xs font-medium transition-colors ${
-                  activeView === 'tasks' ? 'text-primary' : 'text-muted-foreground'
-                }`}
-              >
-                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                </svg>
-                Tasks
-              </button>
-              <button 
-                onClick={() => handleViewChange('calendar')}
-                className={`flex-1 flex flex-col items-center justify-center gap-1 py-2 text-xs font-medium transition-colors ${
-                  activeView === 'calendar' ? 'text-primary' : 'text-muted-foreground'
-                }`}
-              >
-                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-                Calendar
-              </button>
-              <button 
-                onClick={() => handleViewChange('goals')}
-                className={`flex-1 flex flex-col items-center justify-center gap-1 py-2 text-xs font-medium transition-colors ${
-                  activeView === 'goals' ? 'text-primary' : 'text-muted-foreground'
-                }`}
-              >
-                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-                Goals
-              </button>
-              <button 
-                onClick={() => handleViewChange('profile')}
-                className={`flex-1 flex flex-col items-center justify-center gap-1 py-2 text-xs font-medium transition-colors ${
-                  activeView === 'profile' ? 'text-primary' : 'text-muted-foreground'
-                }`}
-              >
-                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                </svg>
-                Profile
-              </button>
-            </div>
-          </div>
-        )}
       </main>
     </div>
   )

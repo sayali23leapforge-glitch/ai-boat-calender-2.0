@@ -18,6 +18,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { Button } from "@/components/ui/button"
 
 interface TasksViewProps {
   userId: string
@@ -31,6 +32,7 @@ export function TasksView({ userId }: TasksViewProps) {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
   const [listToDelete, setListToDelete] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [isMobile, setIsMobile] = useState(false)
 
   useEffect(() => {
     if (!userId) return
@@ -62,9 +64,18 @@ export function TasksView({ userId }: TasksViewProps) {
       )
       .subscribe()
     
+    // Check mobile on mount and on resize
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768)
+    }
+    
+    checkMobile()
+    window.addEventListener('resize', checkMobile)
+
     return () => {
       window.removeEventListener('refreshTasks', handleRefresh)
       window.removeEventListener('refreshCalendar', handleRefresh)
+      window.removeEventListener('resize', checkMobile)
       supabase.removeChannel(channel)
     }
   }, [userId])
@@ -225,13 +236,49 @@ export function TasksView({ userId }: TasksViewProps) {
 
   return (
     <div className="flex h-screen bg-background">
-      <TaskSidebar
-        userId={userId}
-        activeFilter={activeFilter}
-        onFilterChange={setActiveFilter}
-      />
+      {/* Desktop Sidebar - Hidden on mobile */}
+      {!isMobile && (
+        <TaskSidebar
+          userId={userId}
+          activeFilter={activeFilter}
+          onFilterChange={setActiveFilter}
+        />
+      )}
 
-      <main className="flex-1 overflow-auto p-6">
+      <main className="flex-1 overflow-auto p-4 md:p-6">
+        {/* Mobile Filter Bar - Only on mobile */}
+        {isMobile && (
+          <div className="mb-4 pb-4 border-b border-border/50">
+            <div className="flex gap-2 overflow-x-auto pb-2 -mx-4 px-4">
+              <Button
+                variant={activeFilter === 'all' ? 'default' : 'outline'}
+                onClick={() => setActiveFilter('all')}
+                className="flex-shrink-0 whitespace-nowrap h-8 text-xs"
+              >
+                All Tasks
+              </Button>
+              <Button
+                variant={activeFilter === 'starred' ? 'default' : 'outline'}
+                onClick={() => setActiveFilter('starred')}
+                className="flex-shrink-0 whitespace-nowrap h-8 text-xs"
+              >
+                Starred
+              </Button>
+              {lists.map(list => (
+                <Button
+                  key={list.id}
+                  variant={activeFilter === `list:${list.id}` ? 'default' : 'outline'}
+                  onClick={() => setActiveFilter(`list:${list.id}`)}
+                  className="flex-shrink-0 whitespace-nowrap h-8 text-xs"
+                  style={activeFilter === `list:${list.id}` ? { background: list.color } : {}}
+                >
+                  {list.name}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {isLoading ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center animate-in-smooth">
@@ -241,7 +288,7 @@ export function TasksView({ userId }: TasksViewProps) {
           </div>
         ) : activeFilter === 'starred' ? (
           <div className="max-w-4xl mx-auto">
-            <h1 className="text-3xl font-bold text-foreground mb-6">Starred Tasks</h1>
+            <h1 className="text-2xl md:text-3xl font-bold text-foreground mb-6">Starred Tasks</h1>
             {getStarredTasks().length === 0 ? (
               <div className="text-center py-12">
                 <p className="text-muted-foreground text-lg">No starred tasks</p>
@@ -277,7 +324,7 @@ export function TasksView({ userId }: TasksViewProps) {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 auto-rows-min">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6 auto-rows-min">
             {filteredLists.map((list, index) => (
               <div key={list.id} className="animate-in-smooth" style={{ animationDelay: `${index * 0.05}s` }}>
                 <TaskListCard
