@@ -256,23 +256,23 @@ export function UserProfile() {
   return (
     <div className="h-full bg-background flex flex-col">
       <div className="flex-1 overflow-y-auto">
-        <div className="p-8">
-          <div className="max-w-2xl mx-auto space-y-8">
+        <div className="p-4 md:p-8">
+          <div className="max-w-2xl mx-auto space-y-6 md:space-y-8">
         {/* Header */}
         <div className="space-y-2">
-          <h1 className="text-4xl font-bold">Account Settings</h1>
-          <p className="text-muted-foreground">Manage your account and iMessage integration</p>
+          <h1 className="text-2xl md:text-4xl font-bold">Account Settings</h1>
+          <p className="text-muted-foreground text-sm md:text-base">Manage your account and iMessage integration</p>
         </div>
 
         {/* Profile Card */}
-        <div className="border border-border/50 rounded-lg p-8 glass-strong backdrop-blur-xl space-y-6">
+        <div className="border border-border/50 rounded-lg p-4 md:p-8 glass-strong backdrop-blur-xl space-y-6">
           {/* Email Section */}
           <div className="space-y-2">
-            <label className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <label className="text-xs md:text-sm font-semibold text-foreground flex items-center gap-2">
               <Mail className="h-4 w-4 text-primary" />
               Email Address
             </label>
-            <div className="bg-muted/50 border border-border/30 rounded-lg p-3 text-foreground font-medium">
+            <div className="bg-muted/50 border border-border/30 rounded-lg p-3 text-foreground font-medium text-sm">
               {user.email}
             </div>
             <p className="text-xs text-muted-foreground">Your registered email cannot be changed</p>
@@ -280,21 +280,21 @@ export function UserProfile() {
 
           {/* Phone Section - iMessage Number */}
           <div className="space-y-2 pt-4 border-t border-border/30">
-            <label className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <label className="text-xs md:text-sm font-semibold text-foreground flex items-center gap-2">
               <Phone className="h-4 w-4 text-primary" />
               iMessage Phone Number
             </label>
             
             {!editingPhone ? (
-              <div className="flex items-center justify-between bg-muted/50 border border-border/30 rounded-lg p-3">
-                <span className="font-medium text-foreground">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-muted/50 border border-border/30 rounded-lg p-3">
+                <span className="font-medium text-foreground text-sm break-all">
                   {phone || "No phone number set"}
                 </span>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setEditingPhone(true)}
-                  className="gap-2"
+                  className="gap-2 w-full md:w-auto"
                 >
                   <Edit2 className="h-4 w-4" />
                   Edit
@@ -308,13 +308,13 @@ export function UserProfile() {
                   value={newPhone}
                   onChange={(e) => setNewPhone(e.target.value)}
                   disabled={isLoading}
-                  className="font-medium"
+                  className="font-medium text-sm"
                 />
-                <div className="flex gap-2">
+                <div className="flex flex-col sm:flex-row gap-2">
                   <Button
                     onClick={handleSavePhone}
                     disabled={isLoading}
-                    className="gap-2"
+                    className="gap-2 flex-1"
                   >
                     <Save className="h-4 w-4" />
                     {isLoading ? "Saving..." : "Save Number"}
@@ -323,7 +323,7 @@ export function UserProfile() {
                     variant="outline"
                     onClick={handleCancel}
                     disabled={isLoading}
-                    className="gap-2"
+                    className="gap-2 flex-1"
                   >
                     <X className="h-4 w-4" />
                     Cancel
@@ -338,15 +338,15 @@ export function UserProfile() {
 
           {/* Bloo Number Section - For Incoming Messages */}
           <div className="space-y-2 pt-4 border-t border-border/30">
-            <label className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <label className="text-xs md:text-sm font-semibold text-foreground flex items-center gap-2">
               <Phone className="h-4 w-4 text-blue-500" />
               Bloo Bound Number (Optional)
             </label>
             
             {!editingBloo ? (
-              <div className="flex items-center justify-between bg-muted/50 border border-border/30 rounded-lg p-3">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-muted/50 border border-border/30 rounded-lg p-3">
                 <div className="flex-1">
-                  <span className="font-medium text-foreground">
+                  <span className="font-medium text-foreground text-sm break-all">
                     {blooNumber || "Not set"}
                   </span>
                   <p className="text-xs text-muted-foreground mt-1">
@@ -359,7 +359,7 @@ export function UserProfile() {
                   variant="outline"
                   size="sm"
                   onClick={() => setEditingBloo(true)}
-                  className="gap-2"
+                  className="gap-2 w-full md:w-auto"
                 >
                   <Edit2 className="h-4 w-4" />
                   Edit
@@ -373,13 +373,13 @@ export function UserProfile() {
                   value={newBlooNumber}
                   onChange={(e) => setNewBlooNumber(e.target.value)}
                   disabled={isLoading}
-                  className="font-medium"
+                  className="font-medium text-sm"
                 />
-                <div className="flex gap-2">
+                <div className="flex flex-col sm:flex-row gap-2">
                   <Button
                     onClick={handleSaveBloo}
                     disabled={isLoading}
-                    className="gap-2"
+                    className="gap-2 flex-1"
                   >
                     <Save className="h-4 w-4" />
                     {isLoading ? "Saving..." : "Save Bloo Number"}
@@ -388,7 +388,7 @@ export function UserProfile() {
                     variant="outline"
                     onClick={handleCancelBloo}
                     disabled={isLoading}
-                    className="gap-2"
+                    className="gap-2 flex-1"
                   >
                     <X className="h-4 w-4" />
                     Cancel
@@ -403,26 +403,26 @@ export function UserProfile() {
 
           {/* Stats Section */}
           <div className="space-y-3 pt-4 border-t border-border/30">
-            <h3 className="text-sm font-semibold text-foreground">Your Activity</h3>
-            <div className="grid grid-cols-3 gap-4">
-              <div className="bg-muted/50 border border-border/30 rounded-lg p-4 text-center space-y-2">
-                <div className="flex items-center justify-center gap-2 text-primary">
-                  <CheckSquare className="h-5 w-5" />
-                  <span className="text-2xl font-bold">{stats.tasksCount}</span>
+            <h3 className="text-xs md:text-sm font-semibold text-foreground">Your Activity</h3>
+            <div className="grid grid-cols-3 gap-2 md:gap-4">
+              <div className="bg-muted/50 border border-border/30 rounded-lg p-3 md:p-4 text-center space-y-2">
+                <div className="flex items-center justify-center gap-1 md:gap-2 text-primary">
+                  <CheckSquare className="h-4 w-4 md:h-5 md:w-5" />
+                  <span className="text-lg md:text-2xl font-bold">{stats.tasksCount}</span>
                 </div>
                 <p className="text-xs text-muted-foreground">Tasks Created</p>
               </div>
-              <div className="bg-muted/50 border border-border/30 rounded-lg p-4 text-center space-y-2">
-                <div className="flex items-center justify-center gap-2 text-purple-500">
-                  <Target className="h-5 w-5" />
-                  <span className="text-2xl font-bold">{stats.goalsCount}</span>
+              <div className="bg-muted/50 border border-border/30 rounded-lg p-3 md:p-4 text-center space-y-2">
+                <div className="flex items-center justify-center gap-1 md:gap-2 text-purple-500">
+                  <Target className="h-4 w-4 md:h-5 md:w-5" />
+                  <span className="text-lg md:text-2xl font-bold">{stats.goalsCount}</span>
                 </div>
                 <p className="text-xs text-muted-foreground">Goals Created</p>
               </div>
-              <div className="bg-muted/50 border border-border/30 rounded-lg p-4 text-center space-y-2">
-                <div className="flex items-center justify-center gap-2 text-blue-500">
-                  <Calendar className="h-5 w-5" />
-                  <span className="text-2xl font-bold">{stats.eventsCount}</span>
+              <div className="bg-muted/50 border border-border/30 rounded-lg p-3 md:p-4 text-center space-y-2">
+                <div className="flex items-center justify-center gap-1 md:gap-2 text-blue-500">
+                  <Calendar className="h-4 w-4 md:h-5 md:w-5" />
+                  <span className="text-lg md:text-2xl font-bold">{stats.eventsCount}</span>
                 </div>
                 <p className="text-xs text-muted-foreground">Events Created</p>
               </div>
@@ -431,19 +431,19 @@ export function UserProfile() {
 
           {/* iMessage Status */}
           <div className="space-y-3 pt-4 border-t border-border/30">
-            <h3 className="text-sm font-semibold text-foreground">iMessage Features</h3>
+            <h3 className="text-xs md:text-sm font-semibold text-foreground">iMessage Features</h3>
             <div className="space-y-2">
               <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                <span className="text-green-600 dark:text-green-400 text-lg mt-0.5">✓</span>
+                <span className="text-green-600 dark:text-green-400 text-lg mt-0.5 flex-shrink-0">✓</span>
                 <div>
-                  <p className="text-sm font-medium">Fuzzy Message Understanding</p>
+                  <p className="text-xs md:text-sm font-medium">Fuzzy Message Understanding</p>
                   <p className="text-xs text-muted-foreground">Handles typos, spelling errors, and casual language</p>
                 </div>
               </div>
               <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                <span className="text-green-600 dark:text-green-400 text-lg mt-0.5">✓</span>
+                <span className="text-green-600 dark:text-green-400 text-lg mt-0.5 flex-shrink-0">✓</span>
                 <div>
-                  <p className="text-sm font-medium">Auto Task/Goal/Event Creation</p>
+                  <p className="text-xs md:text-sm font-medium">Auto Task/Goal/Event Creation</p>
                   <p className="text-xs text-muted-foreground">Send any message and AI will create the right item</p>
                 </div>
               </div>
