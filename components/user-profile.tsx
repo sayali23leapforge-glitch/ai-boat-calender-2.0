@@ -304,9 +304,9 @@ export function UserProfile() {
               <div className="space-y-3">
                 <Input
                   type="tel"
-                  placeholder=\"+1 XXXXXXXXXX\"
+                  placeholder="+1 XXXXXXXXXX"
                   value={newPhone}
-                  onChange={(e) => setNewPhone(e.target.value)}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewPhone(e.target.value)}
                   disabled={isLoading}
                   className="font-medium text-sm"
                 />
@@ -371,7 +371,7 @@ export function UserProfile() {
                   type="tel"
                   placeholder="+1 (424) 513-4881"
                   value={newBlooNumber}
-                  onChange={(e) => setNewBlooNumber(e.target.value)}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewBlooNumber(e.target.value)}
                   disabled={isLoading}
                   className="font-medium text-sm"
                 />
@@ -434,14 +434,14 @@ export function UserProfile() {
             <h3 className="text-xs md:text-sm font-semibold text-foreground">iMessage Features</h3>
             <div className="space-y-2">
               <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                <span className="text-green-600 dark:text-green-400 text-lg mt-0.5 flex-shrink-0">✓</span>
+                <span className="text-green-600 dark:text-green-400 text-lg mt-0.5 shrink-0">✓</span>
                 <div>
                   <p className="text-xs md:text-sm font-medium">Fuzzy Message Understanding</p>
                   <p className="text-xs text-muted-foreground">Handles typos, spelling errors, and casual language</p>
                 </div>
               </div>
               <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                <span className="text-green-600 dark:text-green-400 text-lg mt-0.5 flex-shrink-0">✓</span>
+                <span className="text-green-600 dark:text-green-400 text-lg mt-0.5 shrink-0">✓</span>
                 <div>
                   <p className="text-xs md:text-sm font-medium">Auto Task/Goal/Event Creation</p>
                   <p className="text-xs text-muted-foreground">Send any message and AI will create the right item</p>
