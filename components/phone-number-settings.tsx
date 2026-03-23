@@ -63,7 +63,7 @@ export function PhoneNumberSettings() {
       <div className="flex gap-2">
         <Input
           type="tel"
-          placeholder="+91 9920261793"
+          placeholder="+1 2025551234"
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
           disabled={isLoading}

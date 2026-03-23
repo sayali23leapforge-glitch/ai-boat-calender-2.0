@@ -77,20 +77,10 @@ function normalizePhone(phoneInput: string): string {
     return result;
   }
 
-  // For 10-digit numbers, only auto-prefix +91 if it looks like Indian format
-  // Otherwise, require user to provide country code
+  // For 10-digit numbers, default to +1
   if (cleaned.length === 10) {
-    // If it starts with 6, 7, 8, or 9, it's likely Indian (91xxxxxxxxxx)
-    if (/^[6789]/.test(cleaned)) {
-      const result = "+91" + cleaned;
-      console.log(`[BlooWebhook] 10-digit Indian number detected: ${result}`);
-      return result;
-    }
-    
-    // Ambiguous - return with + only
-    // User should provide country code for non-Indian 10-digit numbers
-    const result = "+" + cleaned;
-    console.log(`[BlooWebhook] 10-digit ambiguous number (not Indian format): ${result}`);
+    const result = "+1" + cleaned;
+    console.log(`[BlooWebhook] 10-digit number defaulting to +1: ${result}`);
     return result;
   }
 

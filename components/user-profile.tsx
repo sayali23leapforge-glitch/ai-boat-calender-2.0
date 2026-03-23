@@ -304,7 +304,7 @@ export function UserProfile() {
               <div className="space-y-3">
                 <Input
                   type="tel"
-                  placeholder="+91 XXXXXXXXXX"
+                  placeholder=\"+1 XXXXXXXXXX\"
                   value={newPhone}
                   onChange={(e) => setNewPhone(e.target.value)}
                   disabled={isLoading}
