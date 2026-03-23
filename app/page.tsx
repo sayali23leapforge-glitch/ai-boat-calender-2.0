@@ -114,7 +114,7 @@ export default function HomePage() {
       {/* Sidebar - Full height */}
       <aside className={`${
         isMobile 
-          ? sidebarOpen ? 'fixed inset-0 z-40 w-64 transform transition-transform' : 'fixed -left-64 z-40 w-64 transform transition-transform'
+          ? sidebarOpen ? 'fixed left-0 top-0 bottom-0 w-64 z-40 transition-transform' : 'fixed -left-64 top-0 bottom-0 w-64 z-40 transition-transform'
           : 'w-64 flex-shrink-0'
       }`}>
         <Sidebar 
@@ -151,9 +151,13 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* Content */}
-        <div className="flex-1 overflow-hidden">
+        {/* Content - Full scrollable area */}
+        <div className="flex-1 overflow-y-auto overflow-x-hidden relative w-full">
           {renderView()}
+        </div>
+
+        {/* ChatWidget - Always visible, positioned at bottom on mobile */}
+        <div className={isMobile ? 'fixed bottom-16 right-0 z-10' : 'absolute bottom-0 right-0 z-10'}>
           <ChatWidget 
             onSetActiveView={handleViewChange} 
             userId={userId}
