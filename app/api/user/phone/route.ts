@@ -47,11 +47,6 @@ export async function POST(req: NextRequest) {
         } else if (normalizedPhone.length === 10) {
           // 10 digits - default to +1 if no country code provided
           normalizedPhone = "+1" + normalizedPhone;
-          } else {
-            // Non-Indian 10-digit - warn user to provide country code
-            console.log("[PhoneUpdate] Warning: 10-digit number that doesn't look Indian. User should provide country code.");
-            normalizedPhone = "+" + normalizedPhone;
-          }
         } else {
           // Less than 10 digits, add + anyway
           normalizedPhone = "+" + normalizedPhone;
