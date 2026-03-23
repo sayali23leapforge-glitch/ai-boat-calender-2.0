@@ -212,9 +212,9 @@ Respond with ONLY valid JSON (no markdown, no extra text):
 }
 
 TYPE RULES:
-- "goal": Learning, improving, building habits (remind me to learn, want to achieve, build habit)
-- "event": Has specific date/time (tomorrow at 7pm, meeting on friday)
-- "task": Simple action without date/time (buy groceries, call mom)
+- "goal": Learning, improving, building habits, recurring actions (remind me to learn, want to achieve, build habit, every day)
+- "event": User mentions scheduling/event keywords (meeting, schedule, appointment, birthday, call, dinner, etc.) OR mentions a specific date (tomorrow, Friday, next week)
+- "task": Simple action without scheduling keywords, even if it has a time (buy groceries, do homework at 1pm, call mom)
 
 TITLE RULES:
 - Remove action words: "create goal/task/event", "remind me (to)", "tell me to"
@@ -244,10 +244,13 @@ TIME RULES:
 
 EXAMPLES:
 "buy groceries" → {"type":"task", "title":"Buy groceries", "date":null, "time":null, "summary":"User wants to buy groceries"}
+"do homework at 1pm" → {"type":"task", "title":"Do homework", "date":null, "time":"13:00", "summary":"User wants to do homework at 1pm"}
 "Create goal to run 6k everyday" → {"type":"goal", "title":"Run 6k everyday", "date":null, "time":null, "summary":"User wants to build habit of 6k running"}
 "remind me to learn coding" → {"type":"goal", "title":"Learn coding", "date":null, "time":null, "summary":"User wants to learn coding"}
-"baseball match tomorrow at 7pm" → {"type":"event", "title":"Baseball match", "date":"2026-03-23", "time":"19:00", "summary":"User has baseball match tomorrow at 7pm"}
-"deadline tomorrow at 2pm" → {"type":"event", "title":"Deadline", "date":"2026-03-23", "time":"14:00", "summary":"User has deadline tomorrow at 2pm"}`;
+"meeting tomorrow at 7pm" → {"type":"event", "title":"Meeting", "date":"2026-03-24", "time":"19:00", "summary":"User has meeting tomorrow at 7pm"}
+"schedule call tomorrow" → {"type":"event", "title":"Call", "date":"2026-03-24", "time":null, "summary":"User wants to schedule call tomorrow"}
+"birthday friday" → {"type":"event", "title":"Birthday", "date":"2026-03-28", "time":null, "summary":"Birthday celebration on Friday"}
+"deadline tomorrow at 2pm" → {"type":"event", "title":"Deadline", "date":"2026-03-24", "time":"14:00", "summary":"User has deadline tomorrow at 2pm"}`;
 
     const response = await model.generateContent(prompt);
     const responseText = response.response.text().trim();
@@ -297,16 +300,20 @@ function parseMessageIntent(text: string): AIAnalysisResult {
   // Detect goal/learning keywords
   const goalKeywords = /\b(learn|study|master|improve|practice|get better|become|achieve|complete|finish|accomplish|run|exercise|workout|gym|build habit)\b/i;
   const isGoal = goalKeywords.test(cleaned);
+  
+  // Detect scheduling/event keywords (meeting, schedule, appointment, birthday, etc.)
+  const schedulingKeywords = /\b(meeting|schedule|appointment|birthday|wedding|conference|interview|presentation|call|lunch|dinner|breakfast|party|event|concert|game|match|flight|travel|trip|deadline|due)\b/i;
+  const hasSchedulingKeyword = schedulingKeywords.test(cleaned);
 
-  // Determine type (check GOAL first to prevent false time matches from becoming events)
+  // Determine type
   let type: "task" | "goal" | "event" = "task";
   
   // If goal keywords found AND no explicit date → GOAL
   if (isGoal && !hasDate) {
     type = "goal";
   }
-  // If has date or time → EVENT
-  else if (hasTime || hasDate) {
+  // If has scheduling keyword OR has a date → EVENT
+  else if (hasSchedulingKeyword || hasDate) {
     type = "event";
   }
   // Otherwise → TASK (default)
