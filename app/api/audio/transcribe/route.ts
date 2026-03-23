@@ -6,10 +6,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
@@ -24,6 +20,10 @@ export async function POST(req: NextRequest) {
     }
 
     console.log('Transcribing audio file:', audioFile.name, audioFile.type, audioFile.size);
+
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
 
     // Convert File to format OpenAI expects
     const transcription = await openai.audio.transcriptions.create({

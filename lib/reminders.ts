@@ -298,15 +298,25 @@ export async function queueTaskGmailReminders(params: {
   if (!offsets.length) return 0;
 
   const now = Date.now();
+  const minScheduledAtMs = now + 30 * 1000;
+  const usedScheduledAtMs = new Set<number>();
   const rows = offsets.map((offsetMinutes) => {
     const scheduledAtMs = dueAt.getTime() - offsetMinutes * 60 * 1000;
-    const normalizedScheduledAt = new Date(Math.max(scheduledAtMs, now + 30 * 1000));
+    let candidateMs = Math.max(scheduledAtMs, minScheduledAtMs);
+
+    // Keep reminder timestamps unique per task to avoid DB unique index conflicts
+    // when multiple overdue reminders are all clamped to "now + 30s".
+    while (usedScheduledAtMs.has(candidateMs)) {
+      candidateMs += 1000;
+    }
+    usedScheduledAtMs.add(candidateMs);
+
     return {
       user_id: params.userId,
       task_id: params.taskId,
       channel: "GMAIL",
       status: "PENDING",
-      scheduled_at: normalizedScheduledAt.toISOString(),
+      scheduled_at: new Date(candidateMs).toISOString(),
       importance_level: decision.level,
       importance_reason: decision.reason,
       metadata: {
