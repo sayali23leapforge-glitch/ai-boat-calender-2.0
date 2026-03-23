@@ -306,11 +306,10 @@ export async function POST(req: NextRequest) {
     // Extract message text and sender
     const rawText = extractText(payload);
     const userPhone = extractSenderPhone(payload);
-    const blooNumber = payload.internal_id ? String(payload.internal_id).trim() : null;
 
     console.log("[BlooWebhook] Extracted text:", rawText);
-    console.log("[BlooWebhook] User phone (external_id):", userPhone);
-    console.log("[BlooWebhook] Bloo number (internal_id):", blooNumber);
+    console.log("[BlooWebhook] User phone (external_id - who texted us):", userPhone);
+    console.log("[BlooWebhook] Bloo number (internal_id - the number they texted):", payload.internal_id);
 
     if (!rawText) {
       console.log("[BlooWebhook] No message text, returning 200");
@@ -322,9 +321,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true }, { status: 200 });
     }
 
-    // ⚠️ IMPORTANT: Use Bloo number (internal_id) for replies, not user's personal number
-    const replyTo = blooNumber || userPhone;
-    console.log("[BlooWebhook] Will send replies to:", replyTo, blooNumber ? "(Bloo number)" : "(user personal number fallback)");
+    // ⚠️ IMPORTANT: Send replies to user's phone (external_id)
+    // Bloo API will automatically show it as coming FROM the Bloo number (+14245134881)
+    const replyTo = userPhone;
+    console.log("[BlooWebhook] Will send replies to user's phone:", replyTo, "(Bloo will show as sender)");
 
     // Normalize phone and look up user
     const normalizedPhone = normalizePhone(String(userPhone));
