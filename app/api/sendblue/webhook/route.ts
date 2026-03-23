@@ -224,37 +224,43 @@ async function sendBlooMessage(toPhone: string, message: string): Promise<boolea
     }
 
     const normalizedPhone = toPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
-    console.log("[BlooWebhook] Sending Bloo message to:", normalizedPhone);
+    console.log("[BlooWebhook] 📤 Sending Bloo message to:", normalizedPhone);
+    console.log("[BlooWebhook] 📝 Message content:", message.substring(0, 100));
 
     const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), 15000);
+    const timeoutId = setTimeout(() => {
+      console.log("[BlooWebhook] ⏱️ Request timeout");
+      abortController.abort();
+    }, 15000);
 
-    const response = await fetch(
-      `https://backend.blooio.com/v2/api/chats/${normalizedPhone}/messages`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${BLOO_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ text: message }),
-        signal: abortController.signal,
-      }
-    );
+    const url = `https://backend.blooio.com/v2/api/chats/${normalizedPhone}/messages`;
+    console.log("[BlooWebhook] 🔗 API endpoint:", url);
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${BLOO_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text: message }),
+      signal: abortController.signal,
+    });
 
     clearTimeout(timeoutId);
 
+    console.log("[BlooWebhook] Response status:", response.status);
+
     if (response.ok) {
       const data = await response.json();
-      console.log("[BlooWebhook] ✅ Bloo message sent:", data);
+      console.log("[BlooWebhook] ✅ Bloo message sent successfully:", data);
       return true;
     } else {
       const error = await response.text();
-      console.log("[BlooWebhook] ❌ Bloo API error:", error);
+      console.log("[BlooWebhook] ❌ Bloo API error (status " + response.status + "):", error);
       return false;
     }
   } catch (error: any) {
-    console.log("[BlooWebhook] ❌ Error sending message:", error.message);
+    console.error("[BlooWebhook] ❌ Error sending message:", error?.message || error);
     return false;
   }
 }
@@ -331,17 +337,27 @@ export async function POST(req: NextRequest) {
     // Analyze message intent
     console.log("[BlooWebhook] Analyzing message...");
     const analysis = await analyzeMessageWithAI(rawText);
+    
+    console.log("[BlooWebhook] Analysis result:", {
+      hasType: !!analysis.type,
+      hasTitle: !!analysis.title,
+      type: analysis.type,
+      title: analysis.title
+    });
 
     // Handle non-actionable messages (greetings, questions, casual chat)
     if (!analysis.type || !analysis.title) {
-      console.log("[BlooWebhook] No actionable intent detected, generating conversational response...");
+      console.log("[BlooWebhook] ⚠️ No actionable intent detected, generating conversational response...");
       
       try {
         const apiKey = process.env.GEMINI_API_KEY;
+        console.log("[BlooWebhook] Checking for Gemini API key:", apiKey ? "✅ Present" : "❌ Missing");
+        
         if (apiKey) {
           const genAI = new GoogleGenerativeAI(apiKey);
           const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
+          console.log("[BlooWebhook] Calling Gemini for conversational response...");
           const response = await model.generateContent({
             contents: [{
               parts: [{
@@ -353,14 +369,17 @@ export async function POST(req: NextRequest) {
 
           const conversationalReply = response.response.text().trim();
           
+          console.log("[BlooWebhook] Gemini conversational reply:", conversationalReply);
+          
           if (conversationalReply) {
-            console.log("[BlooWebhook] Sending conversational response:", conversationalReply);
-            await sendBlooMessage(normalizedPhone, conversationalReply);
+            console.log("[BlooWebhook] 💬 Sending conversational response:", conversationalReply);
+            const sent = await sendBlooMessage(normalizedPhone, conversationalReply);
+            console.log("[BlooWebhook] Conversational message send result:", sent);
             return NextResponse.json({ ok: true }, { status: 200 });
           }
         }
       } catch (error) {
-        console.log("[BlooWebhook] Conversational reply error:", error);
+        console.error("[BlooWebhook] ❌ Conversational reply error:", error instanceof Error ? error.message : error);
       }
       
       // Fallback response if Gemini fails
@@ -373,8 +392,9 @@ export async function POST(req: NextRequest) {
       ];
       const randomReply = fallbackReplies[Math.floor(Math.random() * fallbackReplies.length)];
       
-      console.log("[BlooWebhook] Sending fallback response:", randomReply);
-      await sendBlooMessage(normalizedPhone, randomReply);
+      console.log("[BlooWebhook] 📢 Sending fallback response:", randomReply);
+      const fallbackSent = await sendBlooMessage(normalizedPhone, randomReply);
+      console.log("[BlooWebhook] Fallback message send result:", fallbackSent);
       
       return NextResponse.json({ ok: true }, { status: 200 });
     }
