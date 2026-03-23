@@ -365,6 +365,7 @@ export async function POST(req: NextRequest) {
           console.log("[BlooWebhook] Calling Gemini for conversational response...");
           const response = await model.generateContent({
             contents: [{
+              role: "user",
               parts: [{
                 text: `User sent: "${rawText}"\n\nRespond naturally and briefly (1-2 sentences). Be friendly and helpful.`
               }]
