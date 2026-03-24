@@ -270,6 +270,16 @@ async function sendBlooMessage(toPhone: string, message: string): Promise<boolea
   }
 }
 
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    message: "Bloo webhook endpoint is working",
+    url: "https://ai-bot-calender-uhzp.onrender.com/api/sendblue/webhook",
+    configured: !!process.env.BLOO_API_KEY,
+    apiKeyPresent: !!process.env.BLOO_API_KEY ? "✅ Yes" : "❌ Missing",
+  });
+}
+
 export async function POST(req: NextRequest) {
   console.log("[BlooWebhook] Received POST request");
 
