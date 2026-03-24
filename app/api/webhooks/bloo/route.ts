@@ -277,8 +277,9 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  console.log("[BlooWebhook] ===== WEBHOOK START =====");
+  
   try {
-    console.log("[BlooWebhook] ===== WEBHOOK START =====");
     console.log("[BlooWebhook] Method:", req.method);
     console.log("[BlooWebhook] URL:", req.url);
     console.log("[BlooWebhook] Content-Type:", req.headers.get("content-type"));
@@ -370,19 +371,67 @@ export async function POST(req: NextRequest) {
     console.log("[BlooWebhook] Normalized phone:", normalizedPhone);
 
     const admin = getSupabaseAdminClient();
-    const { data: profile, error: profileError } = await admin
+    
+    // Try exact match first
+    let profile = null;
+    let profileError = null;
+    
+    // Try 1: Exact normalized match
+    ({ data: profile, error: profileError } = await admin
       .from("user_profiles")
       .select("user_id, phone")
       .eq("phone", normalizedPhone)
-      .maybeSingle();
+      .maybeSingle());
+
+    if (!profile && !profileError) {
+      console.log("[BlooWebhook] No exact match, trying alternative formats...");
+      
+      // Try 2: Without country code (last 10 digits)
+      const digitsOnly = normalizedPhone.replace(/\D/g, "");
+      const last10 = digitsOnly.slice(-10);
+      
+      console.log("[BlooWebhook] Trying last 10 digits: +1" + last10);
+      
+      ({ data: profile, error: profileError } = await admin
+        .from("user_profiles")
+        .select("user_id, phone")
+        .eq("phone", "+1" + last10)
+        .maybeSingle());
+    }
+
+    if (!profile && !profileError) {
+      console.log("[BlooWebhook] Still no match, searching all users...");
+      
+      // Try 3: Search for any user with similar number (last digits match)
+      const digitsOnly = normalizedPhone.replace(/\D/g, "");
+      
+      const { data: allProfiles } = await admin
+        .from("user_profiles")
+        .select("user_id, phone");
+      
+      if (allProfiles) {
+        for (const p of allProfiles) {
+          const storedDigits = p.phone?.replace(/\D/g, "") || "";
+          // Match if last 10 digits are the same
+          if (storedDigits.endsWith(digitsOnly.slice(-10)) || storedDigits.slice(-10) === digitsOnly.slice(-10)) {
+            console.log("[BlooWebhook] Found user by digit matching:", p.user_id, "stored phone:", p.phone);
+            profile = p;
+            break;
+          }
+        }
+      }
+    }
 
     if (profileError || !profile?.user_id) {
-      console.log("[BlooWebhook] User not found for phone:", normalizedPhone);
+      console.log("[BlooWebhook] ❌ User not found for phone:", normalizedPhone);
+      console.log("[BlooWebhook] Tried normalizations:");
+      console.log("[BlooWebhook]   - Exact: " + normalizedPhone);
+      console.log("[BlooWebhook]   - +1 + last 10: +1" + normalizedPhone.replace(/\D/g, "").slice(-10));
       return NextResponse.json({ ok: true }, { status: 200 });
     }
 
     const userId = profile.user_id;
-    console.log("[BlooWebhook] User found:", userId);
+    console.log("[BlooWebhook] ✅ User found:", userId, "with phone:", profile.phone);
 
     // Analyze message intent
     console.log("[BlooWebhook] Analyzing message...");
