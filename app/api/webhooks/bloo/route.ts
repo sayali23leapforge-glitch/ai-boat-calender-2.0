@@ -239,6 +239,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true }, { status: 200 });
     }
 
+    // Guard: skip our own bot reply messages (extra safety against loops)
+    const BOT_PREFIXES = ["✅ Task created:", "🎯 Goal set:", "📅 Event added:", "✅ Added:", "⚠️", "❌", "👋 Hi! I received"];
+    if (BOT_PREFIXES.some(p => text.startsWith(p))) {
+      console.log("[Webhook] Skip — looks like a bot reply, not a user message");
+      return NextResponse.json({ ok: true }, { status: 200 });
+    }
+
     const replyTo = senderPhone;
 
     // 5. Find user
