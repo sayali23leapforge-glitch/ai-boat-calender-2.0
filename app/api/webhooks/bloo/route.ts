@@ -278,7 +278,7 @@ export async function POST(req: NextRequest) {
 
     if (dbErr) {
       console.error("[Webhook] DB error:", dbErr.message);
-      await sendBloo(replyTo, "⚠️ System error. Please try again shortly.");
+      sendBloo(replyTo, "⚠️ Oops! I'm having trouble connecting. Please try again in a moment! 🔄", blooNumber).catch(e => console.error("[Webhook] Send error:", e?.message));
       return NextResponse.json({ ok: true }, { status: 200 });
     }
 
@@ -318,7 +318,7 @@ export async function POST(req: NextRequest) {
       console.log("[Webhook] All phones:", allProfiles?.map((p: any) => p.phone));
       sendBloo(
         replyTo,
-        "👋 Hi! I received your message but couldn't link it to an account.\n\nFix: Open the app → Settings → save your phone number and Bloo number (+1(626)742-3142). Then try again!",
+        "👋 Hi! I'm Cal, your calendar assistant. 📱\n\nI couldn't recognize your account. Please:\n\n1. Open the Calendar app\n2. Go to Settings ⚙️\n3. Save your:\n   📞 Personal phone: +919920261793\n   📲 Bloo bound number: +1(626)742-3142\n\nThen message me again and I'll create tasks, events, and goals for you! 🚀",
         blooNumber
       ).catch(e => console.error("[Webhook] Send error:", e?.message));
       return NextResponse.json({ ok: true }, { status: 200 });
@@ -396,19 +396,34 @@ export async function POST(req: NextRequest) {
       }
 
     } else {
-      // Conversational / null
-      let reply = "Hi! 👋 What would you like to create?\n• \"Buy milk\" → task\n• \"Meeting tomorrow 3pm\" → event\n• \"Learn piano daily\" → goal\n\nOr just chat with me!";
+      // Conversational / null — friendly AI assistant response
+      const fallbackReply = "Hey there! 👋 I'm doing great, thanks for asking! 😊\n\nWhat's on your mind? I can help you:\n📝 Create tasks (\"Buy groceries\")\n📅 Schedule events (\"Meeting tomorrow at 2pm\")\n🎯 Set goals (\"Learn guitar daily\")\n\nOr just chat with me!";
+      
+      let reply = fallbackReply;
       const apiKey = process.env.GEMINI_API_KEY;
       if (apiKey) {
         try {
           const genAI = new GoogleGenerativeAI(apiKey);
           const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
           const res = await model.generateContent({
-            contents: [{ role: "user", parts: [{ text: `You are a friendly calendar assistant AI. Reply in 1-2 sentences to: "${text}"` }] }],
-            generationConfig: { maxOutputTokens: 80, temperature: 0.7 },
+            contents: [{
+              role: "user",
+              parts: [{
+                text: `You are a friendly, warm calendar assistant AI named Cal. You help users create tasks, events, and goals via iMessage.
+                
+Respond naturally in 1-2 sentences with emojis. Be conversational and helpful.
+- If they ask "how are you?", reply warmly and ask what they want to create
+- If they say "hi/hey/hello", greet them warmly and ask what they need
+- Always ask what they want to create or help with
+- Keep it friendly and use emojis naturally
+
+User message: "${text}"`
+              }]
+            }],
+            generationConfig: { maxOutputTokens: 100, temperature: 0.7 },
           });
           const r = res.response.text().trim();
-          if (r) reply = r;
+          if (r && r.length > 0) reply = r;
         } catch (e: any) {
           console.log("[Webhook] conversational Gemini failed:", e?.message);
         }
