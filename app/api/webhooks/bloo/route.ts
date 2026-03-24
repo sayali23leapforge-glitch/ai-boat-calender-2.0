@@ -145,21 +145,15 @@ function fallbackIntent(text: string): Intent {
     return { type: null, title: text, date: null, time: null };  // Conversational
   }
   
-  const isGoal = /\b(learn|study|master|improve|practice|habit|daily|every day|each day|consistently)\b/.test(lower);
-  const isEvent = /\b(meeting|appointment|dentist|doctor|lunch|dinner|call with|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(lower)
-    || /\d{1,2}:\d{2}|\d\s*(am|pm)/.test(lower);
-  
-  // Check for TASK keywords (buy, call, fix, make, get, send, etc.)
-  const isTask = /\b(buy|get|purchase|send|call|email|message|write|create|make|fix|repair|clean|cook|do|check|review|complete|finish|start|begin|try|build|process|handle|organize|prepare|setup)\b/i.test(lower);
-  
-  let type: Intent["type"] = null;  // DEFAULT: conversational (no task creation unless keywords found)
-  if (isGoal && !isEvent) type = "goal";
-  else if (isEvent) type = "event";
-  else if (isTask) type = "task";  // Only task if explicit task keywords found
-  
+  // Extract date/time FIRST (before type classification)
   let date: string | null = null;
   if (lower.includes("tomorrow")) date = tomorrow;
   else if (lower.includes("today")) date = today;
+  else if (/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(lower)) {
+    // For weekdays, default to nearest future date (simplified - just use today for now)
+    date = today;  // TODO: Calculate next occurrence of that weekday
+  }
+  
   let time: string | null = null;
   const tm = lower.match(/(\d{1,2}):?(\d{2})?\s*(am|pm)/);
   if (tm) {
@@ -169,6 +163,22 @@ function fallbackIntent(text: string): Intent {
     if (tm[3] === "am" && h === 12) h = 0;
     time = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
   }
+  
+  // Now classify intent type
+  const isGoal = /\b(learn|study|master|improve|practice|habit|daily|every day|each day|consistently)\b/.test(lower);
+  const isEvent = /\b(meeting|appointment|dentist|doctor|lunch|dinner|call with|schedule|book|reserve|reschedule|plan|arrange|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(lower)
+    || /\d{1,2}:\d{2}|\d\s*(am|pm)/.test(lower);
+  const isTask = /\b(buy|get|purchase|send|call|email|message|write|create|make|fix|repair|clean|cook|do|check|review|complete|finish|start|begin|try|build|process|handle|organize|prepare|setup)\b/i.test(lower);
+  
+  let type: Intent["type"] = null;  // DEFAULT: conversational
+  if (isGoal && !isEvent) {
+    type = "goal";
+  } else if (isEvent) {
+    type = "event";  // EVENT: has event keywords or is scheduled for a specific time
+  } else if (isTask) {
+    type = "task";   // TASK: has action keywords but no event/goal keywords
+  }
+  
   return { type, title: text.trim(), date, time };
 }
 
