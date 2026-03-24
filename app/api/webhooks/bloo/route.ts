@@ -1,684 +1,392 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 
-export const runtime = "nodejs"; // safer for reading request bodies + logging
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-type BlooPayload = {
-  event?: string;
-  status?: string;
-  message_id?: string;
-  external_id?: string;
-  protocol?: string;
-  timestamp?: number;
-  internal_id?: string;
-  is_group?: boolean;
-  text?: string;
-  sent_at?: number;
-  message?: string;
-  body?: string;
-  phone?: unknown;
-  sender?: unknown;
-  from?: unknown;
-  phoneNumber?: unknown;
-  conversationId?: string;
-  chatId?: string;
-  [key: string]: unknown;
-};
+// ─── HEALTH CHECK ─────────────────────────────────────────────────────────────
+export async function GET() {
+  try {
+    const admin = getSupabaseAdminClient();
+    const { data, error } = await admin
+      .from("user_profiles")
+      .select("user_id, bloo_bound_number, phone")
+      .limit(20);
+    return NextResponse.json({
+      ok: true,
+      webhook_url: "https://ai-bot-calender-uhzp.onrender.com/api/webhooks/bloo",
+      bloo_api_key: !!process.env.BLOO_API_KEY ? "set" : "MISSING",
+      gemini_api_key: !!process.env.GEMINI_API_KEY ? "set" : "MISSING",
+      db_connected: !error,
+      db_error: error?.message ?? null,
+      user_count: data?.length ?? 0,
+      users_with_bloo: data?.filter((u: any) => u.bloo_bound_number).length ?? 0,
+      users_with_phone: data?.filter((u: any) => u.phone).length ?? 0,
+      profiles: data?.map((u: any) => ({
+        user_id: u.user_id?.slice(0, 8),
+        bloo_bound_number: u.bloo_bound_number ?? null,
+        phone: u.phone ? u.phone.slice(0, 4) + "***" : null,
+      })),
+    });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message }, { status: 500 });
+  }
+}
 
-function safeEqual(a?: string | null, b?: string | null) {
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+function digitsOnly(s: string): string {
+  return s.replace(/\D/g, "");
+}
+
+function normalizePhone(raw: string): string {
+  const cleaned = raw.replace(/\s+/g, "").replace(/[^\d+]/g, "");
+  if (cleaned.startsWith("+")) return "+" + digitsOnly(cleaned);
+  const digits = digitsOnly(cleaned);
+  if (digits.length >= 11) return "+" + digits;
+  if (digits.length === 10) return "+1" + digits;
+  return "+" + digits;
+}
+
+function phonesMatch(a: string, b: string): boolean {
   if (!a || !b) return false;
-  if (a.length !== b.length) return false;
-  let out = 0;
-  for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return out === 0;
+  const da = digitsOnly(a);
+  const db = digitsOnly(b);
+  if (da === db) return true;
+  const la = da.slice(-10);
+  const lb = db.slice(-10);
+  return la.length === 10 && la === lb;
 }
 
-function normalizePhone(phoneInput: string): string {
-  console.log(`[BlooWebhook] Normalizing phone: ${phoneInput}`);
-  
-  // Remove all spaces and non-digit characters (except +)
-  let cleaned = phoneInput
-    .replace(/\s+/g, "")
-    .replace(/[^\d+]/g, "");
-
-  console.log(`[BlooWebhook] After cleaning: ${cleaned}`);
-
-  // If already has +, keep it as-is
-  if (cleaned.startsWith("+")) {
-    const normalized = "+" + cleaned.slice(1).replace(/\D/g, "");
-    console.log(`[BlooWebhook] Already has +: ${normalized}`);
-    return normalized;
-  }
-
-  // Remove any remaining +
-  cleaned = cleaned.replace(/\+/g, "");
-
-  // Now only digits - apply logic matching /api/user/phone endpoint
-  if (cleaned.length > 10) {
-    // Has country code, just add +
-    const result = "+" + cleaned;
-    console.log(`[BlooWebhook] ${cleaned.length} digits (has country code): ${result}`);
-    return result;
-  } else if (cleaned.length === 10) {
-    // 10 digits - default to +1 (US) - SAME AS WEB APP
-    const result = "+1" + cleaned;
-    console.log(`[BlooWebhook] 10 digits (defaulting to +1): ${result}`);
-    return result;
-  } else {
-    // Less than 10 digits, add + anyway
-    const result = "+" + cleaned;
-    console.log(`[BlooWebhook] ${cleaned.length} digits (short): ${result}`);
-    return result;
-  }
+function getTodayTomorrow() {
+  const now = new Date();
+  const fmt = (d: Date) => d.toISOString().split("T")[0];
+  const tmr = new Date(now);
+  tmr.setDate(now.getDate() + 1);
+  return { today: fmt(now), tomorrow: fmt(tmr) };
 }
 
-function extractText(payload: BlooPayload): string | null {
-  // Try multiple field names: text, message, body
-  const raw = payload.text ?? payload.message ?? payload.body ?? null;
-  if (!raw || typeof raw !== "string") {
-    console.log("[BlooWebhook] No message text found");
-    return null;
-  }
-
-  const sanitized = raw
-    .replace(/[\u0000-\u001F\u007F]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return sanitized.length ? sanitized : null;
+function extractText(p: Record<string, unknown>): string | null {
+  const raw = p.text ?? p.message ?? p.body ?? p.content ?? null;
+  if (!raw || typeof raw !== "string") return null;
+  const s = raw.replace(/[\u0000-\u001F\u007F]/g, " ").replace(/\s+/g, " ").trim();
+  return s.length ? s : null;
 }
 
-function extractSenderPhone(payload: BlooPayload): string | null {
-  console.log("[BlooWebhook] Attempting to extract phone...");
-  console.log("[BlooWebhook] Payload keys:", Object.keys(payload));
-
-  // For Bloo: external_id = sender's phone (who sent us the message)
-  const candidates: unknown[] = [
-    payload.external_id,
-    payload.phone,
-    payload.sender,
-    payload.from,
-    payload.phoneNumber,
-  ];
-
-  for (let i = 0; i < candidates.length; i++) {
-    const candidate = candidates[i];
-    if (!candidate) continue;
-
-    if (typeof candidate === "string") {
-      console.log(`[BlooWebhook] Found phone (string): ${candidate}`);
-      return candidate;
-    }
-
-    if (typeof candidate === "object") {
-      const obj = candidate as Record<string, unknown>;
-      const phone =
-        obj.address || obj.phoneNumber || obj.phone || obj.handle || obj.from;
-
-      if (typeof phone === "string") {
-        console.log(`[BlooWebhook] Found phone (object): ${phone}`);
-        return phone;
-      }
+function extractSenderPhone(p: Record<string, unknown>): string | null {
+  const candidates = [p.external_id, p.phone, p.sender, p.from, p.phoneNumber, p.from_number];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.length > 4) return c;
+    if (c && typeof c === "object") {
+      const o = c as Record<string, unknown>;
+      const inner = o.address ?? o.phoneNumber ?? o.phone ?? o.handle ?? o.number;
+      if (typeof inner === "string" && inner.length > 4) return inner as string;
     }
   }
-
-  console.log("[BlooWebhook] No sender phone found");
   return null;
 }
 
-async function analyzeMessageWithAI(text: string): Promise<{ type: "task" | "goal" | "event" | null; title: string; date: string | null; time?: string | null }> {
-  try {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.log("[BlooWebhook] Gemini API key not configured");
-      return fallbackParseIntent(text);
-    }
-
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-    const prompt = `Analyze this message and determine user intent.
-Message: "${text}"
-
-Return ONLY valid JSON:
-{
-  "type": "task" | "goal" | "event" | null,
-  "title": "cleaned action",
-  "date": "YYYY-MM-DD" or null,
-  "time": "HH:MM" or null
-}
-
-Rules:
-- TASK: Simple actions without scheduling (buy milk, call mom, do homework)
-- GOAL: Learning/improving/habits (learn coding, run daily, get fit)
-- EVENT: Scheduled/dated items (meeting tomorrow, lunch Friday 2pm)
-- TODAY: 2026-03-18, TOMORROW: 2026-03-19`;
-
-    console.log("[BlooWebhook] Calling Gemini API...");
-    const response = await model.generateContent(prompt);
-    const responseText = response.response.text().trim();
-
-    try {
-      const result = JSON.parse(responseText);
-      console.log("[BlooWebhook] AI Analysis:", result);
-      return result;
-    } catch (e) {
-      console.log("[BlooWebhook] Failed to parse:", responseText);
-      return fallbackParseIntent(text);
-    }
-  } catch (error) {
-    console.log("[BlooWebhook] AI error, using fallback:", error);
-    return fallbackParseIntent(text);
+function extractBlooNumber(p: Record<string, unknown>): string | null {
+  const candidates = [p.internal_id, p.channel_id, p.to, p.toNumber, p.recipient];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.length > 4) return c;
   }
+  return null;
 }
 
-function fallbackParseIntent(text: string): { type: "task" | "goal" | "event" | null; title: string; date: string | null; time?: string | null } {
-  const lower = text.toLowerCase().trim();
+// ─── AI INTENT ────────────────────────────────────────────────────────────────
+type Intent = { type: "task" | "goal" | "event" | null; title: string; date: string | null; time: string | null };
 
-  // Detect goal/learning keywords
-  const isGoal = /\b(learn|study|master|improve|practice|build habit)\b/.test(lower);
+async function analyzeIntent(text: string): Promise<Intent> {
+  const { today, tomorrow } = getTodayTomorrow();
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (apiKey) {
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+      const result = await model.generateContent({
+        contents: [{
+          role: "user",
+          parts: [{
+            text: `Classify this message. Return ONLY valid JSON, no markdown, no extra text.\n\nMessage: "${text}"\n\nJSON format:\n{"type":"task","title":"concise title","date":null,"time":null}\n\ntype values:\n- "task" = action to do (buy anything, call someone, fix something, any todo)\n- "goal" = habit or learning (learn piano, exercise daily, lose weight)\n- "event" = specific date/time meeting (meeting tomorrow 3pm, dentist Friday)\n- null = pure conversation/question (hi, how are you, what time is it)\n\nToday=${today}, Tomorrow=${tomorrow}`
+          }]
+        }],
+        generationConfig: { maxOutputTokens: 150, temperature: 0.1 },
+      });
+      const raw = result.response.text().trim().replace(/```json|```/g, "").trim();
+      console.log("[Webhook] Gemini raw:", raw);
+      const parsed = JSON.parse(raw);
+      return {
+        type: parsed.type ?? null,
+        title: String(parsed.title ?? text).trim(),
+        date: parsed.date ?? null,
+        time: parsed.time ?? null,
+      };
+    } catch (e: any) {
+      console.log("[Webhook] Gemini failed:", e?.message);
+    }
+  }
+  return fallbackIntent(text);
+}
 
-  // Detect event/scheduling keywords
-  const isEvent =
-    /\b(meeting|schedule|tomorrow|today|friday|monday|tuesday|at \d|pm|am)\b/.test(lower) ||
-    /\d{1,2}:\d{2}|[0-9]{1,2}\s*(am|pm)/.test(lower);
-
-  let type: "task" | "goal" | "event" | null = "task";
+function fallbackIntent(text: string): Intent {
+  const { today, tomorrow } = getTodayTomorrow();
+  const lower = text.toLowerCase();
+  const isGoal = /\b(learn|study|master|improve|practice|habit|daily|every day|each day|consistently)\b/.test(lower);
+  const isEvent = /\b(meeting|appointment|dentist|doctor|lunch|dinner|call with|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(lower)
+    || /\d{1,2}:\d{2}|\d\s*(am|pm)/.test(lower);
+  let type: Intent["type"] = "task";
   if (isGoal && !isEvent) type = "goal";
   else if (isEvent) type = "event";
-
   let date: string | null = null;
-  if (lower.includes("tomorrow")) date = "2026-03-19";
-  else if (lower.includes("today")) date = "2026-03-18";
-
+  if (lower.includes("tomorrow")) date = tomorrow;
+  else if (lower.includes("today")) date = today;
   let time: string | null = null;
-  const timeMatch = lower.match(/(\d{1,2}):?(\d{2})?\s*(am|pm)/);
-  if (timeMatch) {
-    let hour = parseInt(timeMatch[1]);
-    const minute = timeMatch[2] ? parseInt(timeMatch[2]) : 0;
-    if (timeMatch[3]?.includes("p") && hour !== 12) hour += 12;
-    if (timeMatch[3]?.includes("a") && hour === 12) hour = 0;
-    time = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  const tm = lower.match(/(\d{1,2}):?(\d{2})?\s*(am|pm)/);
+  if (tm) {
+    let h = parseInt(tm[1]);
+    const m = tm[2] ? parseInt(tm[2]) : 0;
+    if (tm[3] === "pm" && h !== 12) h += 12;
+    if (tm[3] === "am" && h === 12) h = 0;
+    time = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
   }
-
-  const title = text
-    .replace(/\b(remind me|create|schedule)\b/gi, "")
-    .replace(/\d{1,2}:\d{2}|am|pm|today|tomorrow/gi, "")
-    .trim();
-
-  return { type, title: title || text, date, time };
+  return { type, title: text.trim(), date, time };
 }
 
-async function sendBlooMessage(toPhone: string, message: string): Promise<boolean> {
+// ─── SEND BLOO ────────────────────────────────────────────────────────────────
+async function sendBloo(toPhone: string, message: string): Promise<void> {
+  const key = process.env.BLOO_API_KEY;
+  if (!key) { console.log("[Webhook] BLOO_API_KEY not set — cannot send reply"); return; }
+  const phone = normalizePhone(toPhone);
+  console.log(`[Webhook] SEND→${phone}: "${message.slice(0, 80)}"`);
   try {
-    const BLOO_API_KEY = process.env.BLOO_API_KEY;
-
-    if (!BLOO_API_KEY) {
-      console.log("[BlooWebhook] ⚠️ Bloo API key not configured");
-      return false;
-    }
-
-    const normalizedPhone = toPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
-    console.log("[BlooWebhook] 📤 Sending Bloo message to:", normalizedPhone);
-    console.log("[BlooWebhook] 📝 Message content:", message.substring(0, 100));
-
-    const abortController = new AbortController();
-    const timeoutId = setTimeout(() => {
-      console.log("[BlooWebhook] ⏱️ Request timeout");
-      abortController.abort();
-    }, 15000);
-
-    const url = `https://backend.blooio.com/v2/api/chats/${normalizedPhone}/messages`;
-    console.log("[BlooWebhook] 🔗 API endpoint:", url);
-
-    // Single payload format - the correct one for Bloo
-    const payload = { text: message };
-    console.log("[BlooWebhook] 📦 Payload:", JSON.stringify(payload));
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${BLOO_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-      signal: abortController.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    console.log("[BlooWebhook] Response status:", response.status);
-
-    if (response.ok || response.status === 202) {
-      // 200 OK or 202 Accepted
-      const data = await response.json().catch(() => ({}));
-      console.log("[BlooWebhook] ✅ Bloo message sent successfully:", data);
-      return true;
-    } else {
-      const error = await response.text();
-      console.log("[BlooWebhook] ❌ Bloo API error (status " + response.status + "):", error.substring(0, 200));
-      return false;
-    }
-  } catch (error: any) {
-    console.error("[BlooWebhook] ❌ Error sending message:", error?.message || error);
-    return false;
-  }
-}
-
-export async function GET() {
-  return NextResponse.json({
-    ok: true,
-    message: "Bloo webhook endpoint is working",
-    url: "https://ai-bot-calender-uhzp.onrender.com/api/sendblue/webhook",
-    configured: !!process.env.BLOO_API_KEY,
-    apiKeyPresent: !!process.env.BLOO_API_KEY ? "✅ Yes" : "❌ Missing",
-  });
-}
-
-export async function POST(req: NextRequest) {
-  console.log("[BlooWebhook] ===== WEBHOOK START =====");
-  
-  try {
-    console.log("[BlooWebhook] Method:", req.method);
-    console.log("[BlooWebhook] URL:", req.url);
-    console.log("[BlooWebhook] Content-Type:", req.headers.get("content-type"));
-
-    // Read raw body as text first
-    let rawBody = "";
-    try {
-      rawBody = await req.text();
-      console.log("[BlooWebhook] Raw body received, length:", rawBody?.length ?? 0);
-      if (rawBody && rawBody.length > 0) {
-        console.log("[BlooWebhook] First 500 chars:", rawBody.substring(0, 500));
-      } else {
-        console.log("[BlooWebhook] ⚠️ EMPTY BODY!");
+    const res = await fetch(
+      `https://backend.blooio.com/v2/api/chats/${encodeURIComponent(phone)}/messages`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ text: message }),
+        signal: AbortSignal.timeout(15000),
       }
-    } catch (textError) {
-      console.error("[BlooWebhook] Error reading text:", textError);
-      return NextResponse.json({ ok: true, error: "failed_to_read_body" }, { status: 200 });
-    }
+    );
+    const body = await res.text();
+    console.log(`[Webhook] Bloo API ${res.status}: ${body.slice(0, 300)}`);
+  } catch (e: any) {
+    console.error("[Webhook] Bloo send error:", e?.message);
+  }
+}
 
-    if (!rawBody || rawBody.trim().length === 0) {
-      console.log("[BlooWebhook] ⚠️ Empty or whitespace-only body, returning");
+// ─── DB HELPERS ───────────────────────────────────────────────────────────────
+async function getOrCreateTaskList(admin: any, userId: string): Promise<string | null> {
+  const { data: lists } = await admin.from("task_lists").select("id").eq("user_id", userId).limit(1);
+  if (lists?.length) return lists[0].id;
+  const { data: nl, error } = await admin.from("task_lists")
+    .insert({ user_id: userId, name: "My Tasks", color: "#3b82f6", is_visible: true, position: 0 })
+    .select("id").single();
+  if (error) { console.error("[Webhook] create list error:", error.message); return null; }
+  return nl?.id ?? null;
+}
+
+// ─── MAIN POST HANDLER ────────────────────────────────────────────────────────
+export async function POST(req: NextRequest) {
+  const ts = new Date().toISOString();
+  console.log(`\n[Webhook] ======== INCOMING ${ts} ========`);
+
+  try {
+    // 1. Read body
+    let rawBody = "";
+    try { rawBody = await req.text(); } catch (e: any) {
+      console.error("[Webhook] Read body error:", e?.message);
+      return NextResponse.json({ ok: true }, { status: 200 });
+    }
+    console.log("[Webhook] Body:", rawBody.length, "bytes | preview:", rawBody.slice(0, 600));
+
+    if (!rawBody.trim()) {
+      console.log("[Webhook] Empty body → skip");
       return NextResponse.json({ ok: true }, { status: 200 });
     }
 
-    // Parse JSON
-    let payload: BlooPayload;
-    try {
-      payload = JSON.parse(rawBody);
-      console.log("[BlooWebhook] ✅ JSON parsed successfully");
-      console.log("[BlooWebhook] Event:", payload.event);
-    } catch (parseError) {
-      console.error("[BlooWebhook] ❌ JSON parse failed:", parseError instanceof Error ? parseError.message : String(parseError));
-      return NextResponse.json({ ok: true, error: "invalid_json" }, { status: 200 });
+    // 2. Parse JSON
+    let payload: Record<string, unknown>;
+    try { payload = JSON.parse(rawBody); } catch {
+      console.error("[Webhook] JSON parse failed:", rawBody.slice(0, 200));
+      return NextResponse.json({ ok: true }, { status: 200 });
     }
+    console.log("[Webhook] event:", payload.event, "| keys:", Object.keys(payload).join(", "));
 
-    // Validate webhook signature if configured
-    const secretHeader =
-      req.headers.get("x-sendblue-secret") ||
-      req.headers.get("x-webhook-secret") ||
-      req.headers.get("x-hook-secret") ||
-      req.headers.get("x-signature");
-
-    const expected = process.env.SENDBLUE_WEBHOOK_SECRET;
-
-    if (expected && secretHeader && !safeEqual(secretHeader, expected)) {
-      console.warn("❌ Webhook secret mismatch");
-      return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
-    }
-
-    console.log("[BlooWebhook] ===== RAW PAYLOAD START =====");
-    console.log("[BlooWebhook] Full Payload:", JSON.stringify(payload, null, 2));
-    console.log("[BlooWebhook] Payload Keys:", Object.keys(payload));
-    console.log("[BlooWebhook] ===== RAW PAYLOAD END =====");
-
-    // Only process incoming messages from users
-    const eventType = payload.event;
-    console.log(`[BlooWebhook] Event type: ${eventType}`);
-
-    if (eventType !== "message.received") {
-      console.log(`[BlooWebhook] Ignoring event type: ${eventType} (only processing message.received)`);
+    // 3. Skip outgoing/status events (no text = not a user message)
+    const event = String(payload.event ?? "").toLowerCase();
+    const hasText = !!(payload.text || payload.message || payload.body);
+    if (event && !event.includes("receiv") && !hasText) {
+      console.log(`[Webhook] Skip "${payload.event}" — no user text`);
       return NextResponse.json({ ok: true }, { status: 200 });
     }
 
-    // Extract message text and sender
-    const rawText = extractText(payload);
-    const userPhone = extractSenderPhone(payload);
+    // 4. Extract fields
+    const text = extractText(payload);
+    const senderPhone = extractSenderPhone(payload);  // external_id → reply TO this
+    const blooNumber = extractBlooNumber(payload);    // internal_id → identifies WHICH user
 
-    console.log("[BlooWebhook] Extracted text:", rawText);
-    console.log("[BlooWebhook] User phone (external_id - who texted us):", userPhone);
-    console.log("[BlooWebhook] Bloo number (internal_id - the number they texted):", payload.internal_id);
+    console.log("[Webhook] text:", text);
+    console.log("[Webhook] senderPhone:", senderPhone, "| blooNumber:", blooNumber);
 
-    if (!rawText) {
-      console.log("[BlooWebhook] No message text, returning 200");
+    if (!text || !senderPhone) {
+      console.log("[Webhook] Missing text or sender → skip");
       return NextResponse.json({ ok: true }, { status: 200 });
     }
 
-    if (!userPhone) {
-      console.log("[BlooWebhook] No user phone found, returning 200");
-      return NextResponse.json({ ok: true }, { status: 200 });
-    }
+    const replyTo = senderPhone;
 
-    // ⚠️ IMPORTANT: Send replies to user's phone (external_id)
-    // Bloo API will automatically show it as coming FROM the Bloo number (+14245134881)
-    const replyTo = userPhone;
-    console.log("[BlooWebhook] Will send replies to user's phone:", replyTo, "(Bloo will show as sender)");
-
-    // Normalize phone and look up user
-    const normalizedPhone = normalizePhone(String(userPhone));
-    console.log("[BlooWebhook] Normalized phone:", normalizedPhone);
-
+    // 5. Find user
+    // PRIMARY: match internal_id → bloo_bound_number (user saved their Bloo number in app)
+    // FALLBACK: match external_id → phone (user saved their personal phone in app)
     const admin = getSupabaseAdminClient();
-    
-    // Try exact match first
-    let profile = null;
-    let profileError = null;
-    
-    // Try 1: Exact normalized match
-    ({ data: profile, error: profileError } = await admin
+    const { data: allProfiles, error: dbErr } = await admin
       .from("user_profiles")
-      .select("user_id, phone")
-      .eq("phone", normalizedPhone)
-      .maybeSingle());
+      .select("user_id, phone, bloo_bound_number");
 
-    if (!profile && !profileError) {
-      console.log("[BlooWebhook] No exact match, trying alternative formats...");
-      
-      // Try 2: Without country code (last 10 digits)
-      const digitsOnly = normalizedPhone.replace(/\D/g, "");
-      const last10 = digitsOnly.slice(-10);
-      
-      console.log("[BlooWebhook] Trying last 10 digits: +1" + last10);
-      
-      ({ data: profile, error: profileError } = await admin
-        .from("user_profiles")
-        .select("user_id, phone")
-        .eq("phone", "+1" + last10)
-        .maybeSingle());
+    if (dbErr) {
+      console.error("[Webhook] DB error:", dbErr.message);
+      await sendBloo(replyTo, "⚠️ System error. Please try again shortly.");
+      return NextResponse.json({ ok: true }, { status: 200 });
     }
 
-    if (!profile && !profileError) {
-      console.log("[BlooWebhook] Still no match, searching all users...");
-      
-      // Try 3: Search for any user with similar number (last digits match)
-      const digitsOnly = normalizedPhone.replace(/\D/g, "");
-      
-      const { data: allProfiles } = await admin
-        .from("user_profiles")
-        .select("user_id, phone");
-      
-      if (allProfiles) {
-        for (const p of allProfiles) {
-          const storedDigits = p.phone?.replace(/\D/g, "") || "";
-          // Match if last 10 digits are the same
-          if (storedDigits.endsWith(digitsOnly.slice(-10)) || storedDigits.slice(-10) === digitsOnly.slice(-10)) {
-            console.log("[BlooWebhook] Found user by digit matching:", p.user_id, "stored phone:", p.phone);
-            profile = p;
-            break;
-          }
+    console.log(`[Webhook] Searching ${allProfiles?.length ?? 0} profiles | blooNumber=${blooNumber} | senderPhone=${senderPhone}`);
+
+    let userId: string | null = null;
+
+    if (blooNumber && allProfiles) {
+      const normBloo = normalizePhone(blooNumber);
+      for (const p of allProfiles) {
+        if (p.bloo_bound_number && phonesMatch(normBloo, p.bloo_bound_number)) {
+          userId = p.user_id;
+          console.log(`[Webhook] ✅ Matched bloo_bound_number "${p.bloo_bound_number}" → user ${p.user_id}`);
+          break;
         }
       }
     }
 
-    if (profileError || !profile?.user_id) {
-      console.log("[BlooWebhook] ❌ User not found for phone:", normalizedPhone);
-      console.log("[BlooWebhook] Tried normalizations:");
-      console.log("[BlooWebhook]   - Exact: " + normalizedPhone);
-      console.log("[BlooWebhook]   - +1 + last 10: +1" + normalizedPhone.replace(/\D/g, "").slice(-10));
+    if (!userId && allProfiles) {
+      const normSender = normalizePhone(senderPhone);
+      for (const p of allProfiles) {
+        if (p.phone && phonesMatch(normSender, p.phone)) {
+          userId = p.user_id;
+          console.log(`[Webhook] ✅ Matched phone "${p.phone}" → user ${p.user_id}`);
+          break;
+        }
+      }
+    }
+
+    if (!userId) {
+      console.log("[Webhook] ❌ No user found for blooNumber:", blooNumber, "senderPhone:", senderPhone);
+      console.log("[Webhook] All bloo_bound_numbers:", allProfiles?.map((p: any) => p.bloo_bound_number));
+      console.log("[Webhook] All phones:", allProfiles?.map((p: any) => p.phone));
+      await sendBloo(
+        replyTo,
+        "👋 Hi! I received your message but couldn't link it to an account.\n\nFix: Open the app → Settings → save your phone number and Bloo number (+1(626)742-3142). Then try again!"
+      );
       return NextResponse.json({ ok: true }, { status: 200 });
     }
 
-    const userId = profile.user_id;
-    console.log("[BlooWebhook] ✅ User found:", userId, "with phone:", profile.phone);
+    // 6. Analyze intent
+    const intent = await analyzeIntent(text);
+    console.log("[Webhook] Intent:", JSON.stringify(intent));
 
-    // Analyze message intent
-    console.log("[BlooWebhook] Analyzing message...");
-    const analysis = await analyzeMessageWithAI(rawText);
-    
-    console.log("[BlooWebhook] Analysis result:", {
-      hasType: !!analysis.type,
-      hasTitle: !!analysis.title,
-      type: analysis.type,
-      title: analysis.title
-    });
+    // 7. Create entry and reply
+    if (intent.type === "task") {
+      const listId = await getOrCreateTaskList(admin, userId);
+      if (!listId) {
+        await sendBloo(replyTo, "❌ Couldn't create task list. Please check the app.");
+        return NextResponse.json({ ok: true }, { status: 200 });
+      }
+      const { error } = await admin.from("tasks").insert({
+        user_id: userId, list_id: listId,
+        title: intent.title.slice(0, 200),
+        notes: `Via iMessage: "${text.slice(0, 300)}"`,
+        due_date: intent.date ?? null,
+        due_time: intent.time ?? null,
+        is_completed: false, is_starred: false,
+        position: 0, priority: "medium", progress: 0,
+      });
+      if (error) {
+        console.error("[Webhook] task insert error:", error.message);
+        await sendBloo(replyTo, `❌ Error saving task: ${error.message.slice(0, 80)}`);
+      } else {
+        console.log("[Webhook] ✅ Task:", intent.title);
+        await sendBloo(replyTo, `✅ Task created: "${intent.title}"`);
+      }
 
-    // Handle non-actionable messages (greetings, questions, casual chat)
-    if (!analysis.type || !analysis.title) {
-      console.log("[BlooWebhook] ⚠️ No actionable intent detected, generating conversational response...");
-      
-      try {
-        const apiKey = process.env.GEMINI_API_KEY;
-        console.log("[BlooWebhook] Checking for Gemini API key:", apiKey ? "✅ Present" : "❌ Missing");
-        
-        if (apiKey) {
+    } else if (intent.type === "goal") {
+      const { error } = await admin.from("goals").insert({
+        user_id: userId,
+        title: intent.title.slice(0, 200),
+        description: `Via iMessage: "${text.slice(0, 300)}"`,
+        category: "personal", priority: "medium",
+        progress: 0, target_date: intent.date ?? null,
+      });
+      if (error) {
+        console.error("[Webhook] goal insert error:", error.message);
+        await sendBloo(replyTo, `❌ Error saving goal: ${error.message.slice(0, 80)}`);
+      } else {
+        console.log("[Webhook] ✅ Goal:", intent.title);
+        await sendBloo(replyTo, `🎯 Goal set: "${intent.title}"`);
+      }
+
+    } else if (intent.type === "event") {
+      if (!intent.date) {
+        // No date → save as task
+        const listId = await getOrCreateTaskList(admin, userId);
+        if (listId) {
+          await admin.from("tasks").insert({ user_id: userId, list_id: listId, title: intent.title.slice(0, 200), notes: `Via iMessage`, due_time: intent.time ?? null, is_completed: false, is_starred: false, position: 0, priority: "medium", progress: 0 });
+        }
+        await sendBloo(replyTo, `✅ Added: "${intent.title}" (include a date like "tomorrow" or "Friday" to create a calendar event)`);
+      } else {
+        const { error } = await admin.from("calendar_events").insert({
+          user_id: userId,
+          title: intent.title.slice(0, 200),
+          description: `Via iMessage: "${text.slice(0, 300)}"`,
+          event_date: intent.date,
+          start_time: intent.time ?? null,
+          is_completed: false, category: "other", priority: "medium",
+        });
+        if (error) {
+          console.error("[Webhook] event insert error:", error.message);
+          await sendBloo(replyTo, `❌ Error saving event: ${error.message.slice(0, 80)}`);
+        } else {
+          const dateStr = intent.time ? `${intent.date} at ${intent.time}` : intent.date;
+          console.log("[Webhook] ✅ Event:", intent.title);
+          await sendBloo(replyTo, `📅 Event added: "${intent.title}" — ${dateStr}`);
+        }
+      }
+
+    } else {
+      // Conversational / null
+      let reply = "Hi! 👋 Send me things like:\n• \"Buy milk\" → creates a task\n• \"Meeting tomorrow 3pm\" → adds to calendar\n• \"Learn piano daily\" → sets a goal";
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (apiKey) {
+        try {
           const genAI = new GoogleGenerativeAI(apiKey);
           const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-          console.log("[BlooWebhook] Calling Gemini for conversational response...");
-          const response = await model.generateContent({
-            contents: [{
-              role: "user",
-              parts: [{
-                text: `User sent: "${rawText}"\n\nRespond naturally and briefly (1-2 sentences). Be friendly and helpful.`
-              }]
-            }],
-            generationConfig: { maxOutputTokens: 100 }
+          const res = await model.generateContent({
+            contents: [{ role: "user", parts: [{ text: `You are a friendly calendar assistant AI. Reply in 1-2 sentences to: "${text}"` }] }],
+            generationConfig: { maxOutputTokens: 80, temperature: 0.7 },
           });
-
-          const conversationalReply = response.response.text().trim();
-          
-          console.log("[BlooWebhook] Gemini conversational reply:", conversationalReply);
-          
-          if (conversationalReply) {
-            console.log("[BlooWebhook] 💬 Sending conversational response:", conversationalReply);
-            const sent = await sendBlooMessage(replyTo, conversationalReply);
-            console.log("[BlooWebhook] Conversational message send result:", sent);
-            return NextResponse.json({ ok: true }, { status: 200 });
-          }
+          const r = res.response.text().trim();
+          if (r) reply = r;
+        } catch (e: any) {
+          console.log("[Webhook] conversational Gemini failed:", e?.message);
         }
-      } catch (error) {
-        console.error("[BlooWebhook] ❌ Conversational reply error:", error instanceof Error ? error.message : error);
       }
-      
-      // Fallback response if Gemini fails
-      const fallbackReplies = [
-        "Got it! 👍",
-        "Thanks for letting me know! 📝",
-        "I hear you! 🎯",
-        "Understood! 💬",
-        "Thanks for the update! ✨",
-      ];
-      const randomReply = fallbackReplies[Math.floor(Math.random() * fallbackReplies.length)];
-      
-      console.log("[BlooWebhook] 📢 Sending fallback response:", randomReply);
-      const fallbackSent = await sendBlooMessage(replyTo, randomReply);
-      console.log("[BlooWebhook] Fallback message send result:", fallbackSent);
-      
-      return NextResponse.json({ ok: true }, { status: 200 });
+      await sendBloo(replyTo, reply);
     }
 
-    console.log("[BlooWebhook] Processing:", analysis.type);
-
-    // ========================================================================
-    // CREATE TASK
-    // ========================================================================
-    if (analysis.type === "task") {
-      try {
-        // Get or create default list
-        const { data: listData } = await admin
-          .from("task_lists")
-          .select("id")
-          .eq("user_id", userId)
-          .limit(1)
-          .maybeSingle();
-
-        let listId = listData?.id;
-
-        if (!listId) {
-          const { data: newList, error: listError } = await admin
-            .from("task_lists")
-            .insert({
-              user_id: userId,
-              name: "Personal",
-              color: "#3b82f6",
-              is_visible: true,
-              position: 0,
-            })
-            .select("id")
-            .single();
-
-          if (listError || !newList?.id) {
-            console.log("[BlooWebhook] Failed to create task list");
-            return NextResponse.json({ ok: true }, { status: 200 });
-          }
-          listId = newList.id;
-        }
-
-        // Insert task
-        const { error: taskError } = await admin.from("tasks").insert({
-          user_id: userId,
-          list_id: listId,
-          title: analysis.title.slice(0, 200),
-          notes: `From SMS: ${rawText.slice(0, 200)}`,
-          due_date: analysis.date || null,
-          due_time: analysis.time || null,
-          is_completed: false,
-          is_starred: false,
-          position: 0,
-          priority: "medium",
-          progress: 0,
-          metadata: {
-            source: "bloo_webhook",
-            originalMessage: rawText,
-          },
-        });
-
-        if (taskError) {
-          console.log("[BlooWebhook] Failed to create task:", taskError);
-          return NextResponse.json({ ok: true }, { status: 200 });
-        }
-
-        console.log("[BlooWebhook] Task created");
-        await sendBlooMessage(replyTo, `✅ TASK CREATED`);
-        return NextResponse.json({ ok: true }, { status: 200 });
-      } catch (error) {
-        console.log("[BlooWebhook] Task creation error:", error);
-        return NextResponse.json({ ok: true }, { status: 200 });
-      }
-    }
-
-    // ========================================================================
-    // CREATE GOAL
-    // ========================================================================
-    if (analysis.type === "goal") {
-      try {
-        const { error: goalError } = await admin.from("goals").insert({
-          user_id: userId,
-          title: analysis.title.slice(0, 200),
-          description: `From SMS: ${rawText.slice(0, 300)}`,
-          category: "personal",
-          priority: "medium",
-          progress: 0,
-          target_date: analysis.date || null,
-        });
-
-        if (goalError) {
-          console.log("[BlooWebhook] Failed to create goal:", goalError);
-          return NextResponse.json({ ok: true }, { status: 200 });
-        }
-
-        console.log("[BlooWebhook] Goal created");
-        await sendBlooMessage(replyTo, `🎯 GOAL CREATED`);
-        return NextResponse.json({ ok: true }, { status: 200 });
-      } catch (error) {
-        console.log("[BlooWebhook] Goal creation error:", error);
-        return NextResponse.json({ ok: true }, { status: 200 });
-      }
-    }
-
-    // ========================================================================
-    // CREATE EVENT
-    // ========================================================================
-    if (analysis.type === "event") {
-      if (!analysis.date) {
-        console.log("[BlooWebhook] Event missing date, creating task instead");
-        
-        const { data: listData } = await admin
-          .from("task_lists")
-          .select("id")
-          .eq("user_id", userId)
-          .limit(1)
-          .maybeSingle();
-
-        let listId = listData?.id;
-
-        if (!listId) {
-          const { data: newList } = await admin
-            .from("task_lists")
-            .insert({
-              user_id: userId,
-              name: "Personal",
-              color: "#3b82f6",
-              is_visible: true,
-              position: 0,
-            })
-            .select("id")
-            .single();
-          listId = newList?.id;
-        }
-
-        if (listId) {
-          await admin.from("tasks").insert({
-            user_id: userId,
-            list_id: listId,
-            title: analysis.title.slice(0, 200),
-            notes: `From SMS: ${rawText.slice(0, 200)}`,
-            due_time: analysis.time || null,
-            is_completed: false,
-            is_starred: false,
-            position: 0,
-            priority: "medium",
-            progress: 0,
-          });
-
-          await sendBlooMessage(replyTo, `✅ TASK CREATED`);
-        }
-
-        return NextResponse.json({ ok: true }, { status: 200 });
-      }
-
-      try {
-        const { error: eventError } = await admin.from("calendar_events").insert({
-          user_id: userId,
-          title: analysis.title.slice(0, 200),
-          description: `From SMS: ${rawText.slice(0, 300)}`,
-          event_date: analysis.date,
-          start_time: analysis.time || null,
-          is_completed: false,
-          category: "other",
-          priority: "medium",
-        });
-
-        if (eventError) {
-          console.log("[BlooWebhook] Failed to create event:", eventError);
-          return NextResponse.json({ ok: true }, { status: 200 });
-        }
-
-        console.log("[BlooWebhook] Event created");
-        await sendBlooMessage(replyTo, `📅 EVENT CREATED`);
-        return NextResponse.json({ ok: true }, { status: 200 });
-      } catch (error) {
-        console.log("[BlooWebhook] Event creation error:", error);
-        return NextResponse.json({ ok: true }, { status: 200 });
-      }
-    }
-
+    console.log("[Webhook] ======== DONE ========\n");
     return NextResponse.json({ ok: true }, { status: 200 });
+
   } catch (err: any) {
-    console.error("[BlooWebhook] ❌ Unhandled error:", err?.message || String(err));
-    console.error("[BlooWebhook] Stack:", err?.stack || "no stack");
-    return NextResponse.json({ ok: true, error: "caught_exception" }, { status: 200 });
+    console.error("[Webhook] ❌ Unhandled exception:", err?.message);
+    console.error("[Webhook] Stack:", err?.stack);
+    return NextResponse.json({ ok: true }, { status: 200 });
   }
 }
+
