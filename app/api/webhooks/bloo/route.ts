@@ -219,11 +219,10 @@ export async function POST(req: NextRequest) {
     }
     console.log("[Webhook] event:", payload.event, "| keys:", Object.keys(payload).join(", "));
 
-    // 3. Skip outgoing/status events (no text = not a user message)
+    // 3. Only process inbound user messages — skip queued/delivered/sent/failed etc.
     const event = String(payload.event ?? "").toLowerCase();
-    const hasText = !!(payload.text || payload.message || payload.body);
-    if (event && !event.includes("receiv") && !hasText) {
-      console.log(`[Webhook] Skip "${payload.event}" — no user text`);
+    if (event && event !== "message.received") {
+      console.log(`[Webhook] Skip "${payload.event}" — not an incoming message`);
       return NextResponse.json({ ok: true }, { status: 200 });
     }
 
