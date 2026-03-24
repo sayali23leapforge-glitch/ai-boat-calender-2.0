@@ -111,7 +111,7 @@ async function analyzeIntent(text: string): Promise<Intent> {
             text: `Classify this message. Return ONLY valid JSON, no markdown, no extra text.\n\nMessage: "${text}"\n\nJSON format:\n{"type":"task","title":"concise title","date":null,"time":null}\n\ntype values:\n- "task" = action to do (buy anything, call someone, fix something, any todo)\n- "goal" = habit or learning (learn piano, exercise daily, lose weight)\n- "event" = specific date/time meeting (meeting tomorrow 3pm, dentist Friday)\n- null = pure conversation/question (hi, how are you, what time is it)\n\nToday=${today}, Tomorrow=${tomorrow}`
           }]
         }],
-        generationConfig: { maxOutputTokens: 150, temperature: 0.1 },
+        generationConfig: { maxOutputTokens: 500, temperature: 0.1 },
       });
       const raw = result.response.text().trim().replace(/```json|```/g, "").trim();
       console.log("[Webhook] Gemini raw:", raw);
@@ -154,18 +154,23 @@ function fallbackIntent(text: string): Intent {
 }
 
 // ─── SEND BLOO ────────────────────────────────────────────────────────────────
-async function sendBloo(toPhone: string, message: string): Promise<void> {
+async function sendBloo(toPhone: string, message: string, fromBlooNumber?: string | null): Promise<void> {
   const key = process.env.BLOO_API_KEY;
   if (!key) { console.log("[Webhook] BLOO_API_KEY not set — cannot send reply"); return; }
   const phone = normalizePhone(toPhone);
-  console.log(`[Webhook] SEND→${phone}: "${message.slice(0, 80)}"`);
+  console.log(`[Webhook] SEND→${phone} (from=${fromBlooNumber ?? 'default'}): "${message.slice(0, 80)}"`);
   try {
+    // Include the sending number so Bloo knows which channel/device to use
+    const payload: Record<string, string> = { text: message };
+    if (fromBlooNumber) {
+      payload.number = normalizePhone(fromBlooNumber);
+    }
     const res = await fetch(
       `https://backend.blooio.com/v2/api/chats/${encodeURIComponent(phone)}/messages`,
       {
         method: "POST",
         headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ text: message }),
+        body: JSON.stringify(payload),
         signal: AbortSignal.timeout(15000),
       }
     );
@@ -283,7 +288,8 @@ export async function POST(req: NextRequest) {
       console.log("[Webhook] All phones:", allProfiles?.map((p: any) => p.phone));
       await sendBloo(
         replyTo,
-        "👋 Hi! I received your message but couldn't link it to an account.\n\nFix: Open the app → Settings → save your phone number and Bloo number (+1(626)742-3142). Then try again!"
+        "👋 Hi! I received your message but couldn't link it to an account.\n\nFix: Open the app → Settings → save your phone number and Bloo number (+1(626)742-3142). Then try again!",
+        blooNumber
       );
       return NextResponse.json({ ok: true }, { status: 200 });
     }
@@ -296,7 +302,7 @@ export async function POST(req: NextRequest) {
     if (intent.type === "task") {
       const listId = await getOrCreateTaskList(admin, userId);
       if (!listId) {
-        await sendBloo(replyTo, "❌ Couldn't create task list. Please check the app.");
+        await sendBloo(replyTo, "❌ Couldn't create task list. Please check the app.", blooNumber);
         return NextResponse.json({ ok: true }, { status: 200 });
       }
       const { error } = await admin.from("tasks").insert({
@@ -310,10 +316,10 @@ export async function POST(req: NextRequest) {
       });
       if (error) {
         console.error("[Webhook] task insert error:", error.message);
-        await sendBloo(replyTo, `❌ Error saving task: ${error.message.slice(0, 80)}`);
+        await sendBloo(replyTo, `❌ Error saving task: ${error.message.slice(0, 80)}`, blooNumber);
       } else {
         console.log("[Webhook] ✅ Task:", intent.title);
-        await sendBloo(replyTo, `✅ Task created: "${intent.title}"`);
+        await sendBloo(replyTo, `✅ Task created: "${intent.title}"`, blooNumber);
       }
 
     } else if (intent.type === "goal") {
@@ -326,10 +332,10 @@ export async function POST(req: NextRequest) {
       });
       if (error) {
         console.error("[Webhook] goal insert error:", error.message);
-        await sendBloo(replyTo, `❌ Error saving goal: ${error.message.slice(0, 80)}`);
+        await sendBloo(replyTo, `❌ Error saving goal: ${error.message.slice(0, 80)}`, blooNumber);
       } else {
         console.log("[Webhook] ✅ Goal:", intent.title);
-        await sendBloo(replyTo, `🎯 Goal set: "${intent.title}"`);
+        await sendBloo(replyTo, `🎯 Goal set: "${intent.title}"`, blooNumber);
       }
 
     } else if (intent.type === "event") {
@@ -339,7 +345,7 @@ export async function POST(req: NextRequest) {
         if (listId) {
           await admin.from("tasks").insert({ user_id: userId, list_id: listId, title: intent.title.slice(0, 200), notes: `Via iMessage`, due_time: intent.time ?? null, is_completed: false, is_starred: false, position: 0, priority: "medium", progress: 0 });
         }
-        await sendBloo(replyTo, `✅ Added: "${intent.title}" (include a date like "tomorrow" or "Friday" to create a calendar event)`);
+        await sendBloo(replyTo, `✅ Added: "${intent.title}" (include a date like "tomorrow" or "Friday" to create a calendar event)`, blooNumber);
       } else {
         const { error } = await admin.from("calendar_events").insert({
           user_id: userId,
@@ -351,11 +357,11 @@ export async function POST(req: NextRequest) {
         });
         if (error) {
           console.error("[Webhook] event insert error:", error.message);
-          await sendBloo(replyTo, `❌ Error saving event: ${error.message.slice(0, 80)}`);
+          await sendBloo(replyTo, `❌ Error saving event: ${error.message.slice(0, 80)}`, blooNumber);
         } else {
           const dateStr = intent.time ? `${intent.date} at ${intent.time}` : intent.date;
           console.log("[Webhook] ✅ Event:", intent.title);
-          await sendBloo(replyTo, `📅 Event added: "${intent.title}" — ${dateStr}`);
+          await sendBloo(replyTo, `📅 Event added: "${intent.title}" — ${dateStr}`, blooNumber);
         }
       }
 
@@ -377,7 +383,7 @@ export async function POST(req: NextRequest) {
           console.log("[Webhook] conversational Gemini failed:", e?.message);
         }
       }
-      await sendBloo(replyTo, reply);
+      await sendBloo(replyTo, reply, blooNumber);
     }
 
     console.log("[Webhook] ======== DONE ========\n");
