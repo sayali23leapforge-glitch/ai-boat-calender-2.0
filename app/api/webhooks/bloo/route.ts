@@ -292,24 +292,28 @@ export async function POST(req: NextRequest) {
     const replyTo = senderPhone;  // Send reply back to the personal phone number
 
     // 5. Find user
-    // ┌─ USER PROFILE LOOKUP (Works for ANY user with ANY phone numbers) ─┐
-    // │                                                                    │
-    // │ Bloo payload contains:                                           │
-    // │  - external_id = personal phone that sent message                │
-    // │  - internal_id = Bloo bound number message was sent TO           │
-    // │                                                                    │
-    // │ Profile database contains:                                       │
-    // │  - phone = personal phone number user registered                 │
-    // │  - bloo_bound_number = Bloo number user registered               │
-    // │                                                                    │
-    // │ MATCHING STRATEGY:                                               │
-    // │  1. PRIMARY: Match internal_id with bloo_bound_number            │
-    // │     (most reliable — Bloo number is unique per device)           │
-    // │  2. FALLBACK: Match external_id with phone                       │
-    // │     (if no Bloo match, try personal phone)                       │
-    // │  3. If still no match: Tell user to update settings              │
-    // │                                                                    │
-    // └────────────────────────────────────────────────────────────────────┘
+    // ┌─ USER PROFILE LOOKUP (Multi-User Shared Bloo Support) ─┐
+    // │                                                         │
+    // │ Scenario: Multiple users share the SAME Bloo number   │
+    // │ Each user has a DIFFERENT personal phone               │
+    // │                                                         │
+    // │ Bloo payload contains:                               │
+    // │  - external_id = sender's personal phone number       │
+    // │  - internal_id = shared Bloo bound number             │
+    // │                                                         │
+    // │ MATCHING PRIORITY (for shared Bloo):                  │
+    // │  1. PRIMARY: Match external_id with phone             │
+    // │     (WHO sent the message → correct user account)     │
+    // │  2. FALLBACK: Match internal_id with bloo_bound_num   │
+    // │     (if phone not registered yet)                     │
+    // │                                                         │
+    // │ Example: 3 users, 1 Bloo number                       │
+    // │  User 1: +8090995623  ) ──┐                           │
+    // │  User 2: +8080603212  ) ── Shared: +16267423142       │
+    // │  User 3: +9920261793  ) ──┘                           │
+    // │                                                         │
+    // │ Message from User 2 → Task created in User 2 account  │
+    // └─────────────────────────────────────────────────────────┘
     const admin = getSupabaseAdminClient();
     const { data: allProfiles, error: dbErr } = await admin
       .from("user_profiles")
@@ -324,27 +328,27 @@ export async function POST(req: NextRequest) {
 
     let userId: string | null = null;
 
-    // PRIMARY MATCH: Try to find user by Bloo bound number (internal_id from Bloo)
-    // This is the most reliable match because each Bloo device/channel has one bound number
-    if (blooNumber && allProfiles) {
-      const normBloo = normalizePhone(blooNumber);
+    // PRIMARY MATCH: Try to find user by SENDER'S PHONE (external_id from Bloo)
+    // This is critical for multi-user shared Bloo: match by WHO SENT the message
+    if (senderPhone && allProfiles) {
+      const normSender = normalizePhone(senderPhone);
       for (const p of allProfiles) {
-        if (p.bloo_bound_number && phonesMatch(normBloo, p.bloo_bound_number)) {
+        if (p.phone && phonesMatch(normSender, p.phone)) {
           userId = p.user_id;
-          console.log(`[Webhook] ✅ PRIMARY MATCH: bloo_bound_number "${p.bloo_bound_number}" → user ${p.user_id}`);
+          console.log(`[Webhook] ✅ PRIMARY MATCH: phone "${p.phone}" → user ${p.user_id}`);
           break;
         }
       }
     }
 
-    // FALLBACK MATCH: If no Bloo match, try to find user by personal phone (external_id from Bloo)
-    // This catches users who may not have registered their Bloo number yet
-    if (!userId && allProfiles) {
-      const normSender = normalizePhone(senderPhone);
+    // FALLBACK MATCH: If no phone match, try to find user by Bloo bound number (internal_id from Bloo)
+    // This catches users who may not have registered their phone number yet
+    if (!userId && blooNumber && allProfiles) {
+      const normBloo = normalizePhone(blooNumber);
       for (const p of allProfiles) {
-        if (p.phone && phonesMatch(normSender, p.phone)) {
+        if (p.bloo_bound_number && phonesMatch(normBloo, p.bloo_bound_number)) {
           userId = p.user_id;
-          console.log(`[Webhook] ✅ FALLBACK MATCH: phone "${p.phone}" → user ${p.user_id}`);
+          console.log(`[Webhook] ✅ FALLBACK MATCH: bloo_bound_number "${p.bloo_bound_number}" → user ${p.user_id}`);
           break;
         }
       }
