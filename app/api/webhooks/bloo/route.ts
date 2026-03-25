@@ -15,7 +15,7 @@ export async function GET() {
       .limit(20);
     return NextResponse.json({
       ok: true,
-      webhook_url: "https://ai-bot-calender-uhzp.onrender.com/api/webhooks/bloo",
+      webhook_url: "https://ai-bot-calender-qy3c.onrender.com/api/webhooks/bloo",
       bloo_api_key: !!process.env.BLOO_API_KEY ? "set" : "MISSING",
       gemini_api_key: !!process.env.GEMINI_API_KEY ? "set" : "MISSING",
       db_connected: !error,
