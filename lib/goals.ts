@@ -88,6 +88,58 @@ export async function getGoals(userId: string): Promise<GoalWithTasks[]> {
   return out.goals || [];
 }
 
+export type GoalsPageResult = {
+  goals: GoalWithTasks[];
+  hasMore: boolean;
+  offset: number;
+  limit: number;
+};
+
+/** Optional server-side filters for `getGoalsPage` (category, priority, title/description search). */
+export type GoalsListFilters = {
+  category?: GoalCategory | null;
+  priority?: GoalPriority | null;
+  search?: string;
+};
+
+/**
+ * Paginated goals (newest first). Use with infinite scroll in GoalManager.
+ */
+export async function getGoalsPage(
+  userId: string,
+  options: { limit?: number; offset?: number } & GoalsListFilters = {}
+): Promise<GoalsPageResult> {
+  const limit = Math.min(100, Math.max(1, options.limit ?? 12));
+  const offset = Math.max(0, options.offset ?? 0);
+  const body: Record<string, unknown> = { userId, limit, offset };
+  if (options.category) body.category = options.category;
+  if (options.priority) body.priority = options.priority;
+  const s = options.search?.trim();
+  if (s) body.search = s;
+  const out = await apiFetch<{
+    goals: GoalWithTasks[];
+    hasMore?: boolean;
+    offset?: number;
+    limit?: number;
+  }>("/api/goals/get", {
+    body,
+  });
+  return {
+    goals: out.goals ?? [],
+    hasMore: Boolean(out.hasMore),
+    offset: out.offset ?? offset,
+    limit: out.limit ?? limit,
+  };
+}
+
+/** One goal with tasks (refresh after task mutation without reloading all pages). */
+export async function getGoalWithTasks(goalId: string): Promise<GoalWithTasks | null> {
+  const out = await apiFetch<{ goal: GoalWithTasks }>("/api/goals/get", {
+    body: { goalId },
+  });
+  return out.goal ?? null;
+}
+
 export async function createGoal(
   userId: string,
   goal: {

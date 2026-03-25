@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { CalendarView } from "@/components/calendar-view"
 import { GoalManager } from "@/components/goal-manager"
 import { PriorityDashboard } from "@/components/priority-dashboard"
@@ -9,42 +9,28 @@ import { DocumentUpload } from "@/components/document-upload"
 import { TasksView } from "@/components/tasks-view"
 import { FocusModeView } from "@/components/focus-mode-view"
 import { Sidebar } from "@/components/sidebar"
+import { AppNavbar } from "@/components/app-navbar"
 import { useAuth } from "@/components/auth/auth-provider"
 import { EmailAuthForm } from "@/components/auth/email-auth-form"
 import { Loader2 } from "lucide-react"
 import ChatWidget from "@/components/chat_widget"
 import { UserProfile } from "@/components/user-profile"
-
-type AllowedView = "tasks" | "calendar" | "goals" | "priorities" | "focus" | "google" | "upload" | "profile"
+import { cn } from "@/lib/utils"
+import type { WorkspaceView } from "@/lib/workspace-types"
 
 export default function HomePage() {
-  const [activeView, setActiveView] = useState<AllowedView>("tasks")
-  const [refreshKey, setRefreshKey] = useState(0)
-  const [isMobile, setIsMobile] = useState(false)
+  const [activeView, setActiveView] = useState<WorkspaceView>("tasks")
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [refreshKey, setRefreshKey] = useState(0)
   const { user, loading, signOut } = useAuth()
-
-  useEffect(() => {
-    // Check if mobile on mount and on resize
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth < 768)
-    }
-    
-    checkMobile()
-    window.addEventListener('resize', checkMobile)
-    return () => window.removeEventListener('resize', checkMobile)
-  }, [])
-
-  // Close sidebar when switching views on mobile
-  const handleViewChange = (view: AllowedView) => {
-    setActiveView(view)
-    if (isMobile) {
-      setSidebarOpen(false)
-    }
-  }
 
   const handleRefresh = () => {
     setRefreshKey(prev => prev + 1)
+  }
+
+  const handleViewChange = (view: WorkspaceView) => {
+    setActiveView(view)
+    setSidebarOpen(false)
   }
 
   if (loading) {
@@ -111,14 +97,23 @@ export default function HomePage() {
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
-      {/* Sidebar - Full height */}
-      <aside className={`${
-        isMobile 
-          ? sidebarOpen ? 'fixed left-0 top-0 bottom-0 w-64 z-40 transition-transform' : 'fixed -left-64 top-0 bottom-0 w-64 z-40 transition-transform'
-          : 'w-64 flex-shrink-0'
-      }`}>
-        <Sidebar 
-          activeView={activeView} 
+      {sidebarOpen ? (
+        <button
+          type="button"
+          className="fixed inset-0 z-[105] bg-black/50 md:hidden"
+          aria-label="Close navigation menu"
+          onClick={() => setSidebarOpen(false)}
+        />
+      ) : null}
+
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-[110] flex h-full w-[min(18rem,100vw)] shrink-0 flex-col bg-background shadow-xl transition-transform duration-200 ease-out md:static md:z-[1] md:w-64 md:max-w-none md:translate-x-0 md:shadow-none",
+          sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+        )}
+      >
+        <Sidebar
+          activeView={activeView}
           onViewChange={handleViewChange}
           userId={userId}
           onRefresh={handleRefresh}
@@ -126,49 +121,27 @@ export default function HomePage() {
         />
       </aside>
 
-      {/* Mobile overlay when sidebar is open */}
-      {isMobile && sidebarOpen && (
-        <div 
-          className="fixed inset-0 bg-black/50 z-30"
-          onClick={() => setSidebarOpen(false)}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <AppNavbar
+          activeView={activeView}
+          userEmail={user.email ?? undefined}
+          onMenuClick={() => setSidebarOpen(true)}
+          onRefresh={handleRefresh}
+          onSignOut={signOut}
         />
-      )}
-
-      {/* Main Content Area */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-        {/* Mobile Header - Hamburger Menu */}
-        {isMobile && (
-          <div className="bg-background border-b border-border/50 px-4 py-3 flex items-center gap-4 flex-shrink-0">
-            <button
-              onClick={() => setSidebarOpen(!sidebarOpen)}
-              className="p-2 hover:bg-muted rounded-lg transition-colors"
-            >
-              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-            </button>
-            <h1 className="text-sm font-semibold capitalize">{activeView}</h1>
-          </div>
-        )}
-
-        {/* Content - Full scrollable area */}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden relative w-full">
+        <main className="relative flex-1 min-h-0 overflow-hidden">
           {renderView()}
-        </div>
-
-        {/* ChatWidget - Always visible, positioned at bottom on mobile */}
-        <div className={isMobile ? 'fixed bottom-0 right-0 z-10' : 'absolute bottom-0 right-0 z-10'}>
-          <ChatWidget 
-            onSetActiveView={handleViewChange} 
+          <ChatWidget
+            onSetActiveView={handleViewChange}
             userId={userId}
             onFileUploaded={() => {
-              if (activeView === 'upload') {
+              if (activeView === "upload") {
                 handleRefresh()
               }
             }}
           />
-        </div>
-      </main>
+        </main>
+      </div>
     </div>
   )
 }

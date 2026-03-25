@@ -81,11 +81,6 @@ export function CalendarView({ userId }: CalendarViewProps) {
     if (!userId) return;
     loadEvents();
     loadUserPreferences();
-  }, [userId]);
-
-  // Real-time subscription for calendar events (separate from data loading)
-  useEffect(() => {
-    if (!userId) return;
 
     // Subscribe to real-time event changes
     const channel = supabase
@@ -103,38 +98,13 @@ export function CalendarView({ userId }: CalendarViewProps) {
           loadEvents()
         }
       )
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'calendar_events',
-          filter: `user_id=eq.${userId}`,
-        },
-        () => {
-          console.log('📝 Event updated! Refreshing...')
-          loadEvents()
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'DELETE',
-          schema: 'public',
-          table: 'calendar_events',
-          filter: `user_id=eq.${userId}`,
-        },
-        () => {
-          console.log('🗑️ Event deleted! Refreshing...')
-          loadEvents()
-        }
-      )
       .subscribe()
 
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [userId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, currentDate, refreshTrigger]);
 
   // Listen for custom events to refresh calendar (e.g., when tasks are created)
   useEffect(() => {

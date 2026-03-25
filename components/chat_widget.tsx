@@ -32,15 +32,7 @@ import {
 } from "@/lib/calendar-events";
 
 import { createGoal, getGoals, updateGoal, deleteGoal, type GoalWithTasks } from "@/lib/goals";
-
-type AllowedView =
-  | "tasks"
-  | "calendar"
-  | "goals"
-  | "priorities"
-  | "focus"
-  | "google"
-  | "upload";
+import type { WorkspaceView } from "@/lib/workspace-types";
 
 type Priority = "critical" | "high" | "medium" | "low";
 
@@ -51,7 +43,7 @@ type Priority = "critical" | "high" | "medium" | "low";
 type ToolCall =
   | { id?: string; name: "ui_console_log"; arguments: { message: string } }
   | { id?: string; name: "ui_alert"; arguments: { message: string } }
-  | { id?: string; name: "set_active_view"; arguments: { view: AllowedView } }
+  | { id?: string; name: "set_active_view"; arguments: { view: WorkspaceView } }
   | {
       id?: string;
       name: "request_disambiguation";
@@ -167,10 +159,13 @@ type ChatApiResponse = {
   assistantText: string;
   toolCalls: ToolCall[];
   requestId?: string;
+  /** When true, skip adding an assistant bubble; optional toast via successMessage */
+  silentMode?: boolean;
+  successMessage?: string;
 };
 
 type ChatWidgetProps = {
-  onSetActiveView: (view: AllowedView) => void;
+  onSetActiveView: (view: WorkspaceView) => void;
   userId: string;
   onFileUploaded?: () => void;
 };
@@ -180,7 +175,7 @@ type RecentEntities = {
   lastEventTitle?: string | null;
   lastGoalTitle?: string | null;
   lastTaskListName?: string | null;
-  lastActiveView?: AllowedView | null;
+  lastActiveView?: WorkspaceView | null;
 
   // ✅ Wave 4 (additive): ID-based memory
   lastTaskId?: string | null;
@@ -727,7 +722,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
       return;
     }
     if (tc.name === "set_active_view") {
-      const view = (tc as any).arguments?.view as AllowedView | undefined;
+      const view = (tc as any).arguments?.view as WorkspaceView | undefined;
       if (view) {
         onSetActiveView(view);
         setRecentEntities({ lastActiveView: view });
@@ -1866,7 +1861,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
                     />
                   </div>
                 </div>
-                <Button onClick={send} disabled={loading} className="rounded-xl">
+                <Button onClick={() => void send()} disabled={loading} className="rounded-xl">
                   {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 </Button>
               </div>

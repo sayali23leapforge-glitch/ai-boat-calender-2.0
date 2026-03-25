@@ -9,5 +9,19 @@
   - Add extracted_events table to realtime publication
 */
 
-ALTER PUBLICATION supabase_realtime ADD TABLE documents;
-ALTER PUBLICATION supabase_realtime ADD TABLE extracted_events;
+DO $$
+BEGIN
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE documents;
+  EXCEPTION
+    WHEN duplicate_object THEN
+      RAISE NOTICE 'documents already in supabase_realtime publication';
+  END;
+
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE extracted_events;
+  EXCEPTION
+    WHEN duplicate_object THEN
+      RAISE NOTICE 'extracted_events already in supabase_realtime publication';
+  END;
+END $$;

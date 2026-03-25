@@ -48,12 +48,15 @@ export async function getTasks(
   userId: string,
   filters?: {
     listId?: string
+    /** Restrict to these list ids (from `task_lists`; see /api/tasks/get). */
+    listIds?: string[]
     isStarred?: boolean
     isCompleted?: boolean
   }
 ): Promise<TaskWithList[]> {
   const params = new URLSearchParams({ userId })
   if (filters?.listId) params.set('listId', filters.listId)
+  if (filters?.listIds?.length) params.set('listIds', filters.listIds.join(','))
   if (filters?.isStarred !== undefined) params.set('isStarred', String(filters.isStarred))
   if (filters?.isCompleted !== undefined) params.set('isCompleted', String(filters.isCompleted))
 
@@ -253,6 +256,20 @@ export function formatDueDate(dueDate: string | null, dueTime?: string | null): 
     const relative = formatDistanceToNow(date, { addSuffix: true })
     const timeLabel = dueTime ? format(date, 'p') : null
     return timeLabel ? `Due ${relative} • ${timeLabel}` : `Due ${relative}`
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Label for completed tasks. Uses `updated_at` as a proxy for completion time
+ * (no dedicated `completed_at` column yet).
+ */
+export function formatCompletedAt(updatedAt: string | null | undefined): string | null {
+  if (!updatedAt) return null
+  try {
+    const d = parseISO(updatedAt)
+    return `Completed ${format(d, 'PPp')}`
   } catch {
     return null
   }

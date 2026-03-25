@@ -4,7 +4,7 @@ import { useState } from "react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
 import { Star } from "lucide-react"
-import { type Task, formatDueDate, isTaskOverdue, type TaskPriority } from "@/lib/tasks"
+import { type Task, formatCompletedAt, formatDueDate, isTaskOverdue, type TaskPriority } from "@/lib/tasks"
 import { cn } from "@/lib/utils"
 
 interface TaskCardProps {
@@ -16,8 +16,9 @@ interface TaskCardProps {
 
 export function TaskCard({ task, onToggleComplete, onToggleStarred, onClick }: TaskCardProps) {
   const [isHovered, setIsHovered] = useState(false)
-  const dueDateText = formatDueDate(task.due_date, task.due_time)
-  const isOverdue = isTaskOverdue(task.due_date, task.due_time)
+  const completedAtText = task.is_completed ? formatCompletedAt(task.updated_at) : null
+  const dueDateText = !task.is_completed ? formatDueDate(task.due_date, task.due_time) : null
+  const isOverdue = !task.is_completed && isTaskOverdue(task.due_date, task.due_time)
   const priorityColor = priorityColorMap[task.priority]
 
   return (
@@ -97,18 +98,20 @@ export function TaskCard({ task, onToggleComplete, onToggleStarred, onClick }: T
           </div>
         )}
 
-        {dueDateText && (
+        {(completedAtText || dueDateText) && (
           <div className="mt-2">
             <Badge
               variant="secondary"
               className={cn(
                 "text-xs font-medium",
-                isOverdue
-                  ? "bg-destructive/10 text-destructive border-destructive/20"
-                  : "bg-muted text-muted-foreground"
+                completedAtText
+                  ? "border border-emerald-200/70 bg-emerald-100 text-emerald-800 dark:border-emerald-800/60 dark:bg-emerald-950/80 dark:text-emerald-200"
+                  : isOverdue
+                    ? "bg-destructive/10 text-destructive border-destructive/20"
+                    : "bg-muted text-muted-foreground"
               )}
             >
-              {dueDateText}
+              {completedAtText ?? dueDateText}
             </Badge>
           </div>
         )}

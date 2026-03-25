@@ -1,15 +1,18 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { format, parseISO } from "date-fns"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
-import { AlertTriangle, Clock, CheckCircle2, TrendingUp, Filter, Calendar, MapPin } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { AlertTriangle, Clock, CheckCircle2, TrendingUp, Calendar, MapPin, Loader2, Search, X } from "lucide-react"
 import { toast } from "sonner"
 import { computePriorityStats, getPrioritySnapshot, sortPriorityTasks, type PriorityTask, type PriorityFilter } from "@/lib/priorities"
-import { toggleTaskComplete } from "@/lib/tasks"
+import { formatCompletedAt, toggleTaskComplete } from "@/lib/tasks"
 import { cn } from "@/lib/utils"
 
 const emptyStats = {
@@ -52,11 +55,52 @@ interface PriorityDashboardProps {
   userId: string
 }
 
+/** Match `GOAL_PAGE_SIZE` in goal-manager (12). */
+const PRIORITY_TASK_PAGE_SIZE = 12
+
+function taskMatchesDueDateRange(dueDate: string | null, from: string, to: string): boolean {
+  const hasFrom = Boolean(from?.trim())
+  const hasTo = Boolean(to?.trim())
+  if (!hasFrom && !hasTo) return true
+  if (!dueDate) return false
+  const d = dueDate.slice(0, 10)
+  if (hasFrom && d < from) return false
+  if (hasTo && d > to) return false
+  return true
+}
+
 export function PriorityDashboard({ userId }: PriorityDashboardProps) {
   const [tasks, setTasks] = useState<PriorityTask[]>([])
   const [stats, setStats] = useState(emptyStats)
-  const [filter, setFilter] = useState<PriorityFilter>("all")
+  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("all")
+  const [taskNameSearch, setTaskNameSearch] = useState("")
+  const [debouncedNameSearch, setDebouncedNameSearch] = useState("")
+  const [dueDateFrom, setDueDateFrom] = useState("")
+  const [dueDateTo, setDueDateTo] = useState("")
   const [isLoading, setIsLoading] = useState(false)
+  /** How many sorted tasks to render (scrollable pagination over in-memory list). */
+  const [visibleTaskCount, setVisibleTaskCount] = useState(PRIORITY_TASK_PAGE_SIZE)
+  const [loadingMoreTasks, setLoadingMoreTasks] = useState(false)
+  const priorityListScrollRef = useRef<HTMLDivElement | null>(null)
+  const loadMoreInFlightRef = useRef(false)
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedNameSearch(taskNameSearch.trim()), 300)
+    return () => window.clearTimeout(t)
+  }, [taskNameSearch])
+
+  const hasActiveFilters =
+    priorityFilter !== "all" ||
+    debouncedNameSearch.length > 0 ||
+    dueDateFrom.trim().length > 0 ||
+    dueDateTo.trim().length > 0
+
+  const clearPriorityFilters = () => {
+    setPriorityFilter("all")
+    setTaskNameSearch("")
+    setDueDateFrom("")
+    setDueDateTo("")
+  }
 
   const loadData = useCallback(async () => {
     if (!userId) return
@@ -104,12 +148,22 @@ export function PriorityDashboard({ userId }: PriorityDashboardProps) {
   const handleToggleComplete = async (taskId: string, completed: boolean) => {
     updateTasksState((prev) =>
       prev.map((task) =>
-        task.id === taskId ? { ...task, is_completed: completed, progress: completed ? 100 : 0 } : task,
+        task.id === taskId
+          ? {
+              ...task,
+              is_completed: completed,
+              progress: completed ? 100 : 0,
+              updated_at: completed ? new Date().toISOString() : task.updated_at,
+            }
+          : task,
       ),
     )
 
     try {
-      await toggleTaskComplete(taskId, completed)
+      const updated = await toggleTaskComplete(taskId, completed)
+      updateTasksState((prev) =>
+        prev.map((task) => (task.id === taskId ? { ...task, ...updated } : task)),
+      )
     } catch (error) {
       console.error("Failed to update task completion", error)
       toast.error("Could not update task. Restoring previous state.")
@@ -118,11 +172,59 @@ export function PriorityDashboard({ userId }: PriorityDashboardProps) {
   }
 
   const filteredTasks = useMemo(() => {
-    if (filter === "all") return tasks
-    return tasks.filter((task) => task.priority === filter)
-  }, [tasks, filter])
+    let list = tasks
+
+    if (priorityFilter !== "all") {
+      list = list.filter((task) => task.priority === priorityFilter)
+    }
+
+    const q = debouncedNameSearch.toLowerCase()
+    if (q) {
+      list = list.filter((task) => {
+        const title = (task.title || "").toLowerCase()
+        const notes = (task.notes || "").toLowerCase()
+        const listName = (task.task_lists?.name || "").toLowerCase()
+        const goal = (task.goal || "").toLowerCase()
+        return title.includes(q) || notes.includes(q) || listName.includes(q) || goal.includes(q)
+      })
+    }
+
+    const from = dueDateFrom.trim()
+    const to = dueDateTo.trim()
+    if (from || to) {
+      list = list.filter((task) => taskMatchesDueDateRange(task.due_date, from, to))
+    }
+
+    return list
+  }, [tasks, priorityFilter, debouncedNameSearch, dueDateFrom, dueDateTo])
 
   const sortedTasks = useMemo(() => sortPriorityTasks(filteredTasks), [filteredTasks])
+
+  const hasMoreTasks = sortedTasks.length > visibleTaskCount
+
+  const pagedTasks = useMemo(
+    () => sortedTasks.slice(0, visibleTaskCount),
+    [sortedTasks, visibleTaskCount]
+  )
+
+  useEffect(() => {
+    setVisibleTaskCount(PRIORITY_TASK_PAGE_SIZE)
+  }, [priorityFilter, debouncedNameSearch, dueDateFrom, dueDateTo])
+
+  const onPriorityListScroll = useCallback(() => {
+    const el = priorityListScrollRef.current
+    if (!el || loadMoreInFlightRef.current || loadingMoreTasks || !hasMoreTasks) return
+    const threshold = 200
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < threshold) {
+      loadMoreInFlightRef.current = true
+      setLoadingMoreTasks(true)
+      setVisibleTaskCount((c) => Math.min(c + PRIORITY_TASK_PAGE_SIZE, sortedTasks.length))
+      window.setTimeout(() => {
+        setLoadingMoreTasks(false)
+        loadMoreInFlightRef.current = false
+      }, 350)
+    }
+  }, [hasMoreTasks, loadingMoreTasks, sortedTasks.length])
 
   const getDaysUntilDue = (dueDate: string | null) => {
     if (!dueDate) return null
@@ -143,29 +245,96 @@ export function PriorityDashboard({ userId }: PriorityDashboardProps) {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      {/* Header + stats — fixed height */}
+      <div className="shrink-0 space-y-6 p-6 pb-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Priority Dashboard</h1>
           <p className="text-muted-foreground">Focus on what matters most</p>
         </div>
-        <div className="flex items-center space-x-2">
-          {isLoading && (
-            <span className="text-xs text-muted-foreground animate-pulse">Refreshing…</span>
-          )}
-          <Filter className="h-4 w-4 text-muted-foreground" />
-          <select
-            value={filter}
-            onChange={(e) => setFilter(e.target.value as PriorityFilter)}
-            className="bg-background border border-border rounded-md px-3 py-1 text-sm"
-          >
-            <option value="all">All Priorities</option>
-            <option value="critical">Critical</option>
-            <option value="high">High</option>
-            <option value="medium">Medium</option>
-            <option value="low">Low</option>
-          </select>
+        {isLoading ? (
+          <span className="text-xs text-muted-foreground animate-pulse sm:pt-1">Refreshing…</span>
+        ) : null}
+      </div>
+
+      {/* Filters — name, priority level, due date range */}
+      <div className="flex flex-col gap-3 border-t border-border/60 pt-4">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Filters</p>
+        <div className="flex flex-col gap-3 xl:flex-row xl:flex-wrap xl:items-end">
+          <div className="relative min-w-0 flex-1 xl:min-w-[220px] xl:max-w-md">
+            <Search
+              className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+              aria-hidden
+            />
+            <Input
+              value={taskNameSearch}
+              onChange={(e) => setTaskNameSearch(e.target.value)}
+              placeholder="Search title, notes, list, or goal…"
+              className="h-9 pl-9 pr-9"
+              aria-label="Search tasks by name or notes"
+            />
+            {taskNameSearch ? (
+              <button
+                type="button"
+                className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                onClick={() => setTaskNameSearch("")}
+                aria-label="Clear name search"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            ) : null}
+          </div>
+          <div className="grid gap-1 sm:min-w-[11rem]">
+            <Label htmlFor="priority-level-filter" className="text-xs text-muted-foreground">
+              Priority level
+            </Label>
+            <Select
+              value={priorityFilter}
+              onValueChange={(v) => setPriorityFilter(v as PriorityFilter)}
+            >
+              <SelectTrigger id="priority-level-filter" className="h-9 w-full sm:w-[11rem]">
+                <SelectValue placeholder="Priority" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All priorities</SelectItem>
+                <SelectItem value="critical">Critical</SelectItem>
+                <SelectItem value="high">High</SelectItem>
+                <SelectItem value="medium">Medium</SelectItem>
+                <SelectItem value="low">Low</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-1 sm:min-w-[10rem]">
+            <Label htmlFor="due-from" className="text-xs text-muted-foreground">
+              Due from
+            </Label>
+            <Input
+              id="due-from"
+              type="date"
+              value={dueDateFrom}
+              onChange={(e) => setDueDateFrom(e.target.value)}
+              className="h-9 w-full sm:w-[10.5rem]"
+            />
+          </div>
+          <div className="grid gap-1 sm:min-w-[10rem]">
+            <Label htmlFor="due-to" className="text-xs text-muted-foreground">
+              Due to
+            </Label>
+            <Input
+              id="due-to"
+              type="date"
+              value={dueDateTo}
+              onChange={(e) => setDueDateTo(e.target.value)}
+              className="h-9 w-full sm:w-[10.5rem]"
+            />
+          </div>
+          {hasActiveFilters ? (
+            <Button type="button" variant="outline" size="sm" className="h-9 shrink-0" onClick={clearPriorityFilters}>
+              Clear filters
+            </Button>
+          ) : null}
         </div>
       </div>
 
@@ -216,24 +385,46 @@ export function PriorityDashboard({ userId }: PriorityDashboardProps) {
           </div>
         </Card>
       </div>
+      </div>
 
-      {/* Priority Tasks */}
-      <div className="space-y-4">
-        <h2 className="text-lg font-semibold">Priority Tasks</h2>
-        <div className="space-y-3">
+      {/* Priority Tasks — scrollable list */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 pb-6">
+        <h2 className="shrink-0 pb-3 text-lg font-semibold">Priority Tasks</h2>
+        <div
+          ref={priorityListScrollRef}
+          onScroll={onPriorityListScroll}
+          className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden pr-1 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent"
+          role="region"
+          aria-label="Priority tasks list"
+        >
           {isLoading && tasks.length === 0 ? (
             <Card className="p-6 text-center text-sm text-muted-foreground">Loading priority data…</Card>
           ) : sortedTasks.length === 0 ? (
             <Card className="p-6 text-center text-sm text-muted-foreground">
-              {filter === "all" ? "No tasks available yet." : `No ${filter} tasks to show.`}
+              {hasActiveFilters ? (
+                <>
+                  <p className="mb-4">No tasks match your filters.</p>
+                  <Button type="button" variant="outline" size="sm" onClick={clearPriorityFilters}>
+                    Clear filters
+                  </Button>
+                </>
+              ) : (
+                "No tasks available yet."
+              )}
             </Card>
           ) : (
-            sortedTasks.map((task) => {
+            <>
+            <div className="space-y-3">
+            {pagedTasks.map((task) => {
               const daysLeft = getDaysUntilDue(task.due_date)
               const PriorityIcon = priorityIcons[task.priority]
               const isOverdue = typeof daysLeft === "number" && daysLeft < 0 && !task.is_completed
-              const dueCopy =
-                daysLeft === null
+              const completedAtText = task.is_completed
+                ? formatCompletedAt(task.updated_at) ?? "Completed"
+                : null
+              const dueCopy = task.is_completed
+                ? null
+                : daysLeft === null
                   ? "No due date"
                   : isOverdue
                     ? `${Math.abs(daysLeft)} day${Math.abs(daysLeft) === 1 ? "" : "s"} overdue`
@@ -242,7 +433,7 @@ export function PriorityDashboard({ userId }: PriorityDashboardProps) {
                       : daysLeft === 1
                         ? "Due tomorrow"
                         : `${daysLeft} days left`
-              const dueTimeLabel = formatDueTime(task.due_date, task.due_time)
+              const dueTimeLabel = task.is_completed ? null : formatDueTime(task.due_date, task.due_time)
               const progressValue = Math.min(100, Math.max(0, task.progress ?? (task.is_completed ? 100 : 0)))
               const accent = priorityAccent[task.priority]
 
@@ -305,12 +496,23 @@ export function PriorityDashboard({ userId }: PriorityDashboardProps) {
                           <span
                             className={cn(
                               "inline-flex items-center gap-1",
-                              isOverdue && "text-destructive font-medium",
+                              completedAtText &&
+                                "rounded-full border border-emerald-200/70 bg-emerald-100 px-2 py-0.5 font-medium text-emerald-800 dark:border-emerald-800/60 dark:bg-emerald-950/80 dark:text-emerald-200",
+                              !completedAtText && isOverdue && "text-destructive font-medium",
                             )}
                           >
-                            <Calendar className="h-3 w-3" />
-                            {dueCopy}
-                            {dueTimeLabel && <span className="text-muted-foreground">• {dueTimeLabel}</span>}
+                            {completedAtText ? (
+                              <>
+                                <CheckCircle2 className="h-3 w-3 shrink-0" aria-hidden />
+                                {completedAtText}
+                              </>
+                            ) : (
+                              <>
+                                <Calendar className="h-3 w-3 shrink-0" aria-hidden />
+                                {dueCopy}
+                                {dueTimeLabel && <span className="text-muted-foreground">• {dueTimeLabel}</span>}
+                              </>
+                            )}
                           </span>
                           {task.estimated_hours && task.estimated_hours > 0 && (
                             <span className="inline-flex items-center gap-1">
@@ -334,7 +536,21 @@ export function PriorityDashboard({ userId }: PriorityDashboardProps) {
                   </div>
                 </Card>
               )
-            })
+            })}
+            </div>
+          {hasMoreTasks ? (
+            <div className="flex flex-col items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
+              {loadingMoreTasks ? (
+                <>
+                  <Loader2 className="h-6 w-6 animate-spin text-primary" aria-hidden />
+                  <span>Loading more tasks…</span>
+                </>
+              ) : (
+                <span className="text-xs">Scroll for more tasks</span>
+              )}
+            </div>
+          ) : null}
+            </>
           )}
         </div>
       </div>

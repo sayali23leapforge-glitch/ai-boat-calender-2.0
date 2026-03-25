@@ -14,6 +14,8 @@
 
 -- Convert calendar_events.user_id: uuid -> text
 DO $$
+DECLARE
+  p record;
 BEGIN
   IF EXISTS (
     SELECT 1 FROM information_schema.columns 
@@ -21,6 +23,16 @@ BEGIN
       AND column_name = 'user_id' 
       AND data_type = 'uuid'
   ) THEN
+    -- Drop policies that depend on user_id before type conversion
+    FOR p IN
+      SELECT policyname
+      FROM pg_policies
+      WHERE schemaname = 'public'
+        AND tablename = 'calendar_events'
+    LOOP
+      EXECUTE format('DROP POLICY IF EXISTS %I ON calendar_events', p.policyname);
+    END LOOP;
+
     -- Drop any foreign key constraints first
     ALTER TABLE calendar_events 
       DROP CONSTRAINT IF EXISTS calendar_events_user_id_fkey;
@@ -40,6 +52,8 @@ END $$;
 
 -- Convert user_preferences.user_id: uuid -> text
 DO $$
+DECLARE
+  p record;
 BEGIN
   IF EXISTS (
     SELECT 1 FROM information_schema.columns 
@@ -47,6 +61,16 @@ BEGIN
       AND column_name = 'user_id' 
       AND data_type = 'uuid'
   ) THEN
+    -- Drop policies that depend on user_id before type conversion
+    FOR p IN
+      SELECT policyname
+      FROM pg_policies
+      WHERE schemaname = 'public'
+        AND tablename = 'user_preferences'
+    LOOP
+      EXECUTE format('DROP POLICY IF EXISTS %I ON user_preferences', p.policyname);
+    END LOOP;
+
     -- Drop unique constraint first (to allow type change)
     ALTER TABLE user_preferences 
       DROP CONSTRAINT IF EXISTS user_preferences_user_id_key;

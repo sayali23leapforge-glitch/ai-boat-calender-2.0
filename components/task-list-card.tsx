@@ -4,7 +4,7 @@ import { useState } from "react"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { MoreVertical, Plus, Pencil, Trash2, Sparkles } from "lucide-react"
+import { MoreVertical, Plus, Pencil, Trash2, Sparkles, Loader2 } from "lucide-react"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,7 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 interface TaskListCardProps {
   list: TaskList
   tasks: Task[]
-  onAddTask: (listId: string, title: string, options?: { priority?: TaskPriority }) => void
+  onAddTask: (listId: string, title: string, options?: { priority?: TaskPriority }) => void | Promise<void>
   onToggleComplete: (taskId: string, isCompleted: boolean) => void
   onToggleStarred: (taskId: string, isStarred: boolean) => void
   onTaskClick: (task: Task) => void
@@ -45,17 +45,27 @@ export function TaskListCard({
   onRefresh,
 }: TaskListCardProps) {
   const [isAddingTask, setIsAddingTask] = useState(false)
+  const [isSubmittingTask, setIsSubmittingTask] = useState(false)
   const [newTaskTitle, setNewTaskTitle] = useState("")
   const [showAICreate, setShowAICreate] = useState(false)
   const [newTaskPriority, setNewTaskPriority] = useState<TaskPriority>("medium")
 
-  const handleAddTask = () => {
-    if (!newTaskTitle.trim()) return
+  const handleAddTask = async () => {
+    if (isSubmittingTask) return
+    const title = newTaskTitle.trim()
+    if (!title) return
 
-    onAddTask(list.id, newTaskTitle.trim(), { priority: newTaskPriority })
-    setNewTaskTitle("")
-    setNewTaskPriority("medium")
-    setIsAddingTask(false)
+    setIsSubmittingTask(true)
+    try {
+      await Promise.resolve(onAddTask(list.id, title, { priority: newTaskPriority }))
+      setNewTaskTitle("")
+      setNewTaskPriority("medium")
+      setIsAddingTask(false)
+    } catch {
+      // Parent should toast; keep form open for retry
+    } finally {
+      setIsSubmittingTask(false)
+    }
   }
 
   const incompleteTasks = tasks.filter(t => !t.is_completed)
@@ -128,25 +138,45 @@ export function TaskListCard({
         )}
 
         {isAddingTask ? (
-          <div className="pt-4 space-y-3 bg-muted/30 p-4 rounded-lg">
-            <Input
-              value={newTaskTitle}
-              onChange={(e) => setNewTaskTitle(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleAddTask()
-                if (e.key === 'Escape') {
-                  setIsAddingTask(false)
-                  setNewTaskTitle("")
-                }
-              }}
-              placeholder="Task title"
-              className="h-10 text-sm w-full"
-              autoFocus
-            />
-            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+          <div className="pt-2 space-y-3">
+            <div className="relative">
+              <Input
+                value={newTaskTitle}
+                onChange={(e) => setNewTaskTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (isSubmittingTask) {
+                    e.preventDefault()
+                    return
+                  }
+                  if (e.key === "Enter") {
+                    e.preventDefault()
+                    void handleAddTask()
+                  }
+                  if (e.key === "Escape" && !isSubmittingTask) {
+                    setIsAddingTask(false)
+                    setNewTaskTitle("")
+                  }
+                }}
+                placeholder="Task title"
+                className="h-9 text-sm pr-10"
+                autoFocus
+                disabled={isSubmittingTask}
+                aria-busy={isSubmittingTask}
+              />
+              {isSubmittingTask && (
+                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none">
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
               <Label className="text-xs text-muted-foreground font-medium">Priority</Label>
-              <Select value={newTaskPriority} onValueChange={(value) => setNewTaskPriority(value as TaskPriority)}>
-                <SelectTrigger className="h-9 text-xs w-full sm:w-auto">
+              <Select
+                value={newTaskPriority}
+                onValueChange={(value) => setNewTaskPriority(value as TaskPriority)}
+                disabled={isSubmittingTask}
+              >
+                <SelectTrigger className="h-8 text-xs w-[min(100%,11rem)]" disabled={isSubmittingTask}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -156,33 +186,30 @@ export function TaskListCard({
                   <SelectItem value="low">Low</SelectItem>
                 </SelectContent>
               </Select>
-            </div>
-            <div className="flex gap-2 pt-2">
               <Button
-                onClick={handleAddTask}
-                className="flex-1 h-9 text-sm"
+                type="button"
+                size="sm"
+                className="h-8 ml-auto"
+                onClick={() => void handleAddTask()}
+                disabled={isSubmittingTask || !newTaskTitle.trim()}
               >
-                Add Task
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setIsAddingTask(false)
-                  setNewTaskTitle("")
-                  setNewTaskPriority("medium")
-                }}
-                className="flex-1 h-9 text-sm"
-              >
-                Cancel
+                {isSubmittingTask ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                    Adding…
+                  </>
+                ) : (
+                  "Add task"
+                )}
               </Button>
             </div>
           </div>
         ) : (
-          <div className="flex flex-col sm:flex-row gap-2 mt-3">
+          <div className="flex gap-2 mt-2">
             <Button
               variant="ghost"
               size="sm"
-              className="w-full sm:flex-1 justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-all duration-200 rounded-lg"
+              className="flex-1 justify-start text-muted-foreground hover:text-foreground hover:bg-accent transition-all duration-200 rounded-lg"
               onClick={() => setIsAddingTask(true)}
             >
               <Plus className="h-4 w-4 mr-2 transition-transform duration-200 group-hover:rotate-90" />
@@ -191,13 +218,11 @@ export function TaskListCard({
             <Button
               variant="ghost"
               size="sm"
-              className="w-full sm:w-auto text-primary hover:text-primary hover:bg-primary/10 rounded-lg transition-all duration-200 hover:scale-110"
+              className="text-primary hover:text-primary hover:bg-primary/10 rounded-lg transition-all duration-200 hover:scale-110"
               onClick={() => setShowAICreate(true)}
               title="Quick create with AI"
             >
-              <Sparkles className="h-4 w-4 mr-2" />
-              <span className="sm:hidden">AI Create</span>
-              <span className="hidden sm:inline">AI</span>
+              <Sparkles className="h-4 w-4" />
             </Button>
           </div>
         )}

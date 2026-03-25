@@ -55,19 +55,23 @@ CREATE INDEX IF NOT EXISTS idx_calendar_events_priority ON calendar_events(prior
 
 ALTER TABLE calendar_events ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Public can view all calendar events" ON calendar_events;
 CREATE POLICY "Public can view all calendar events"
   ON calendar_events FOR SELECT
   USING (true);
 
+DROP POLICY IF EXISTS "Public can insert calendar events" ON calendar_events;
 CREATE POLICY "Public can insert calendar events"
   ON calendar_events FOR INSERT
   WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Public can update calendar events" ON calendar_events;
 CREATE POLICY "Public can update calendar events"
   ON calendar_events FOR UPDATE
   USING (true)
   WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Public can delete calendar events" ON calendar_events;
 CREATE POLICY "Public can delete calendar events"
   ON calendar_events FOR DELETE
   USING (true);

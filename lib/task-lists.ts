@@ -22,10 +22,50 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return json as T
 }
 
-export async function getTaskLists(userId: string): Promise<TaskList[]> {
+export type TaskListsPageResult = {
+  data: TaskList[]
+  hasMore: boolean
+}
+
+export async function getTaskLists(
+  userId: string,
+  filters?: {
+    /** ILIKE on `task_lists.name` only — does not query the `tasks` table. */
+    nameSearch?: string
+  }
+): Promise<TaskList[]> {
   const params = new URLSearchParams({ userId })
+  if (filters?.nameSearch?.trim()) params.set('nameSearch', filters.nameSearch.trim())
   const out = await api<{ data: TaskList[] }>(`/api/task-lists/get?${params.toString()}`)
   return out.data || []
+}
+
+/**
+ * Paginated `task_lists` rows (use with infinite scroll). Pass `limit`/`offset` to GET.
+ */
+export async function getTaskListsPage(
+  userId: string,
+  options: {
+    limit?: number
+    offset?: number
+    nameSearch?: string
+  } = {}
+): Promise<TaskListsPageResult> {
+  const limit = Math.min(100, Math.max(1, options.limit ?? 25))
+  const offset = Math.max(0, options.offset ?? 0)
+  const params = new URLSearchParams({
+    userId,
+    limit: String(limit),
+    offset: String(offset),
+  })
+  if (options.nameSearch?.trim()) params.set('nameSearch', options.nameSearch.trim())
+  const out = await api<{ data: TaskList[]; hasMore?: boolean }>(
+    `/api/task-lists/get?${params.toString()}`
+  )
+  return {
+    data: out.data ?? [],
+    hasMore: Boolean(out.hasMore),
+  }
 }
 
 export async function createTaskList(

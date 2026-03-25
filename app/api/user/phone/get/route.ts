@@ -36,12 +36,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    // Normalize phone - remove spaces
-    const phone = profile?.phone ? profile.phone.replace(/\s+/g, "") : null;
-    console.log("[PhoneGet] Returning phone (normalized):", phone);
-
     return NextResponse.json(
-      { success: true, phone: phone },
+      { success: true, phone: profile?.phone || null },
       {
         status: 200,
         headers: {
