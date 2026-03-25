@@ -99,6 +99,80 @@ function extractBlooNumber(p: Record<string, unknown>): string | null {
   return null;
 }
 
+function extractAudioUrl(p: Record<string, unknown>): string | null {
+  // Check for audio attachment in Bloo payload
+  const candidates = [
+    p.audio_url, p.voice_url, p.media_url, p.attachment_url,
+    (p.media as any)?.url, (p.attachment as any)?.url,
+    (p.audio as any)?.url, (p.voice as any)?.url
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.length > 10 && (c.includes("http") || c.includes("/"))) {
+      return c;
+    }
+  }
+  return null;
+}
+
+// ─── SPEECH-TO-TEXT ───────────────────────────────────────────────────────────
+async function transcribeAudio(audioUrl: string): Promise<string | null> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    console.log("[Webhook] GEMINI_API_KEY not set for transcription");
+    return null;
+  }
+
+  try {
+    // Download audio file
+    console.log("[Webhook] Downloading audio from:", audioUrl.slice(0, 50) + "...");
+    const audioResponse = await fetch(audioUrl, { signal: AbortSignal.timeout(30000) });
+    if (!audioResponse.ok) {
+      console.error("[Webhook] Failed to download audio:", audioResponse.status);
+      return null;
+    }
+    
+    const audioBuffer = await audioResponse.arrayBuffer();
+    const base64Audio = Buffer.from(audioBuffer).toString("base64");
+    
+    // Detect audio type from URL or use default
+    const audioMimeType = audioUrl.includes(".ogg") ? "audio/ogg" : 
+                        audioUrl.includes(".wav") ? "audio/wav" :
+                        audioUrl.includes(".mp3") ? "audio/mpeg" : "audio/ogg";
+    
+    console.log("[Webhook] Transcribing audio (size: " + (audioBuffer.byteLength / 1024).toFixed(1) + "KB)...");
+
+    // Use Gemini to transcribe audio
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    
+    const result = await model.generateContent({
+      contents: [{
+        role: "user",
+        parts: [
+          {
+            inlineData: {
+              mimeType: audioMimeType,
+              data: base64Audio,
+            },
+          },
+          {
+            text: "Transcribe this audio message exactly. Return ONLY the transcribed text, nothing else."
+          }
+        ],
+      }],
+      generationConfig: { maxOutputTokens: 300, temperature: 0.1 },
+    });
+
+    const transcription = result.response.text().trim();
+    console.log("[Webhook] ✅ Transcribed:", transcription);
+    return transcription;
+
+  } catch (e: any) {
+    console.error("[Webhook] Transcription error:", e?.message);
+    return null;
+  }
+}
+
 // ─── AI INTENT ────────────────────────────────────────────────────────────────
 type Intent = { type: "task" | "goal" | "event" | null; title: string; date: string | null; time: string | null };
 
@@ -269,16 +343,27 @@ export async function POST(req: NextRequest) {
     console.log("[Webhook] ======== INCOMING", new Date().toISOString(), "========");
     console.log("[Webhook] event:", payload.event, "| keys:", Object.keys(payload).join(", "));
 
-    // 4. Extract fields
-    const text = extractText(payload);
+    // 4. Extract fields - Try text first, then voice
+    let text = extractText(payload);
     const senderPhone = extractSenderPhone(payload);  // external_id → reply TO this
     const blooNumber = extractBlooNumber(payload);    // internal_id → identifies WHICH user
+    let audioUrl: string | null = null;
 
-    console.log("[Webhook] text:", text);
+    // If no text, extract audio URL (but DON'T transcribe yet - do in background for 1-sec response)
+    if (!text) {
+      audioUrl = extractAudioUrl(payload);
+      if (audioUrl) {
+        console.log("[Webhook] 🎙️ Voice message detected, will transcribe in background...");
+        text = "🎙️ Voice message (transcribing...)";  // Placeholder for quick DB entry
+      }
+    }
+
+    // Log what we found
+    console.log("[Webhook] text:", text ?? "(no text/voice)");
     console.log("[Webhook] senderPhone:", senderPhone, "| blooNumber:", blooNumber);
 
     if (!text || !senderPhone) {
-      console.log("[Webhook] Missing text or sender → skip");
+      console.log("[Webhook] Missing text/voice or sender → skip");
       return NextResponse.json({ ok: true }, { status: 200 });
     }
 
@@ -370,6 +455,9 @@ export async function POST(req: NextRequest) {
     const quickIntent = fallbackIntent(text);
     console.log("[Webhook] Quick Intent (fallback):", JSON.stringify(quickIntent));
 
+    // Determine source (already extracted audioUrl above)
+    const source = audioUrl ? "🎙️ iMessage Voice" : "📱 iMessage Text";
+
     // 7. CREATE DB ENTRY FIRST (verify it works before sending confirmation)
     let dbSuccess = false;
     let dbError = "";
@@ -383,7 +471,7 @@ export async function POST(req: NextRequest) {
           const { error } = await admin.from("tasks").insert({
             user_id: userId, list_id: listId,
             title: quickIntent.title.slice(0, 200),
-            notes: `Via iMessage: "${text.slice(0, 80)}"`,
+            notes: `${source}: "${text.slice(0, 80)}"`,
             due_date: quickIntent.date ?? null,
             due_time: quickIntent.time ?? null,
             is_completed: false, is_starred: false,
@@ -400,7 +488,7 @@ export async function POST(req: NextRequest) {
         const { error } = await admin.from("goals").insert({
           user_id: userId,
           title: quickIntent.title.slice(0, 200),
-          description: `Via iMessage: "${text.slice(0, 80)}"`,
+          description: `${source}: "${text.slice(0, 80)}"`,
           category: "personal", priority: "medium",
           progress: 0, target_date: quickIntent.date ?? null,
         });
@@ -415,7 +503,7 @@ export async function POST(req: NextRequest) {
           const { error } = await admin.from("calendar_events").insert({
             user_id: userId,
             title: quickIntent.title.slice(0, 200),
-            description: `Via iMessage: "${text.slice(0, 80)}"`,
+            description: `${source}: "${text.slice(0, 80)}"`,
             event_date: quickIntent.date,
             start_time: quickIntent.time ?? null,
             is_completed: false, category: "other", priority: "medium",
@@ -517,6 +605,41 @@ Generate a 4-6 line friendly response with examples for each type!`
         console.error("[Webhook] Background Gemini error:", err?.message);
       }
     })();
+
+    // 10. BACKGROUND: If voice message, transcribe in background (don't block main response)
+    if (audioUrl && text === "🎙️ Voice message (transcribing...)") {
+      (async () => {
+        try {
+          console.log("[Webhook] 🎙️ Background: Starting audio transcription...");
+          const transcribedText = await transcribeAudio(audioUrl);
+          if (transcribedText) {
+            console.log("[Webhook] 🎙️ Voice → Text: " + transcribedText);
+            // Now analyze the actual transcribed text with Gemini for refined intent
+            const apiKey = process.env.GEMINI_API_KEY;
+            if (apiKey) {
+              const { today, tomorrow } = getTodayTomorrow();
+              const genAI = new GoogleGenerativeAI(apiKey);
+              const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+              const res = await model.generateContent({
+                contents: [{
+                  role: "user",
+                  parts: [{
+                    text: `Classify this message. Return ONLY valid JSON, no markdown, no extra text.\n\nMessage: "${transcribedText}"\n\nJSON format:\n{"type":"task","title":"concise title","date":null,"time":null}\n\ntype values:\n- "task" = action to do (buy anything, call someone, fix something, any todo)\n- "goal" = habit or learning (learn piano, exercise daily, lose weight)\n- "event" = specific date/time meeting (meeting tomorrow 3pm, dentist Friday)\n- null = pure conversation/question (hi, how are you, what time is it)\n\nToday=${today}, Tomorrow=${tomorrow}`
+                  }]
+                }],
+                generationConfig: { maxOutputTokens: 500, temperature: 0.1 },
+              });
+              const raw = res.response.text().trim().replace(/```json|```/g, "").trim();
+              const refined = JSON.parse(raw);
+              console.log("[Webhook] 🎙️ Refined intent from audio:", refined);
+              // Note: Could update DB with transcribed text here if needed
+            }
+          }
+        } catch (err: any) {
+          console.error("[Webhook] Background transcription error:", err?.message);
+        }
+      })();
+    }
 
     console.log("[Webhook] ======== DONE (response sent) ========\n");
     return NextResponse.json({ ok: true }, { status: 200 });
