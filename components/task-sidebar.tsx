@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Plus, CheckSquare, Star, Eye, EyeOff, ChevronDown, ChevronRight } from "lucide-react"
+import { supabase } from "@/lib/supabase"
 import { getTaskLists, createTaskList, toggleListVisibility, type TaskList } from "@/lib/task-lists"
 import { getTasks } from "@/lib/tasks"
 import { toast } from "sonner"
@@ -25,8 +26,49 @@ export function TaskSidebar({ userId, activeFilter, onFilterChange }: TaskSideba
   const [starredCount, setStarredCount] = useState(0)
 
   useEffect(() => {
+    if (!userId) return
     loadLists()
     loadCounts()
+
+    // Subscribe to real-time task changes
+    const taskChannel = supabase
+      .channel(`tasks-user-${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'tasks',
+          filter: `user_id=eq.${userId}`,
+        },
+        () => {
+          console.log('✨ New task created via iMessage! Refreshing...')
+          loadCounts()
+        }
+      )
+      .subscribe()
+
+    const listChannel = supabase
+      .channel(`task-lists-user-${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'task_lists',
+          filter: `user_id=eq.${userId}`,
+        },
+        () => {
+          console.log('✨ New task list created! Refreshing...')
+          loadLists()
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(taskChannel)
+      supabase.removeChannel(listChannel)
+    }
   }, [userId])
 
   const loadLists = async () => {
