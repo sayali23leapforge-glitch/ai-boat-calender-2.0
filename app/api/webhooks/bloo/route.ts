@@ -99,6 +99,28 @@ function extractBlooNumber(p: Record<string, unknown>): string | null {
   return null;
 }
 
+function extractImageUrl(p: Record<string, unknown>): string | null {
+  // Check for image attachment in Bloo payload
+  const imageExtensions = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"];
+  
+  // Check attachments array for image files
+  if (Array.isArray(p.attachments)) {
+    for (const att of p.attachments) {
+      if (att && typeof att === "object") {
+        const url = (att as any).url;
+        if (typeof url === "string" && url.length > 10) {
+          const lowerUrl = url.toLowerCase();
+          if (imageExtensions.some(ext => lowerUrl.includes(ext))) {
+            console.log("[Webhook] Found image URL in attachments:", url.slice(0, 50) + "...");
+            return url;
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function extractAudioUrl(p: Record<string, unknown>): string | null {
   // Check for audio attachment in Bloo payload
   
@@ -184,6 +206,79 @@ async function transcribeAudio(audioUrl: string): Promise<string | null> {
 
   } catch (e: any) {
     console.error("[Webhook] Transcription error:", e?.message);
+    return null;
+  }
+}
+
+// ─── IMAGE SCANNING ───────────────────────────────────────────────────────────
+async function scanImage(imageUrl: string): Promise<{ title: string; description: string; date?: string; time?: string } | null> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    console.log("[Webhook] GEMINI_API_KEY not set for image scanning");
+    return null;
+  }
+
+  try {
+    console.log("[Webhook] 📸 Downloading image from:", imageUrl.slice(0, 50) + "...");
+    const imageResponse = await fetch(imageUrl, { signal: AbortSignal.timeout(30000) });
+    if (!imageResponse.ok) {
+      console.error("[Webhook] Failed to download image:", imageResponse.status);
+      return null;
+    }
+    
+    const imageBuffer = await imageResponse.arrayBuffer();
+    const base64Image = Buffer.from(imageBuffer).toString("base64");
+    
+    // Detect image type from URL
+    const imageMimeType = imageUrl.toLowerCase().includes(".png") ? "image/png" :
+                         imageUrl.toLowerCase().includes(".gif") ? "image/gif" :
+                         imageUrl.toLowerCase().includes(".webp") ? "image/webp" :
+                         imageUrl.toLowerCase().includes(".bmp") ? "image/bmp" :
+                         "image/jpeg";
+    
+    console.log("[Webhook] 📸 Scanning image (size: " + (imageBuffer.byteLength / 1024).toFixed(1) + "KB, type: " + imageMimeType + ")...");
+
+    // Use Gemini Vision to extract event/task/goal details
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    
+    const result = await model.generateContent({
+      contents: [{
+        role: "user",
+        parts: [
+          {
+            inlineData: {
+              mimeType: imageMimeType,
+              data: base64Image,
+            },
+          },
+          {
+            text: `Analyze this image and extract event/task/goal details. Return ONLY valid JSON, no markdown.
+
+JSON format:
+{"title":"event/task/goal name","description":"what is it about","date":null,"time":null,"type":"event|task|goal"}
+
+Extract:
+- "title": Main event/task/goal name (6-20 words max)
+- "description": Brief what it's about (1-2 sentences)
+- "date": If date visible (YYYY-MM-DD format), else null
+- "time": If time visible (HH:MM format, 24-hour), else null
+- "type": One of "event" (scheduled meeting/appointment), "task" (action item), "goal" (habit/learning)
+
+Return ONLY the JSON object, nothing else.`
+          }
+        ],
+      }],
+      generationConfig: { maxOutputTokens: 500, temperature: 0.1 },
+    });
+
+    const rawText = result.response.text().trim().replace(/```json|```/g, "").trim();
+    const analyzed = JSON.parse(rawText);
+    console.log("[Webhook] 📸 Image analysis:", analyzed);
+    return analyzed;
+
+  } catch (e: any) {
+    console.error("[Webhook] Image scanning error:", e?.message);
     return null;
   }
 }
@@ -362,13 +457,15 @@ export async function POST(req: NextRequest) {
     console.log("[Webhook] event:", payload.event, "| keys:", Object.keys(payload).join(", "));
     console.log("[Webhook] Full payload:", JSON.stringify(payload, null, 2).slice(0, 2000));
 
-    // 4. Extract fields - Try text first, then voice
+    // 4. Extract fields - Try text first, then voice, then image
     let text = extractText(payload);
     const senderPhone = extractSenderPhone(payload);  // external_id → reply TO this
     const blooNumber = extractBlooNumber(payload);    // internal_id → identifies WHICH user
     let audioUrl: string | null = null;
+    let imageUrl: string | null = null;
+    let imageData: { title: string; description: string; date?: string; time?: string } | null = null;
 
-    // If no text, extract audio URL and transcribe IMMEDIATELY (synchronous)
+    // If no text, check for audio URL and transcribe IMMEDIATELY (synchronous)
     if (!text) {
       audioUrl = extractAudioUrl(payload);
       if (audioUrl) {
@@ -380,8 +477,21 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // If still no text, check for image and scan it
+    if (!text) {
+      imageUrl = extractImageUrl(payload);
+      if (imageUrl) {
+        console.log("[Webhook] 📸 Image detected, scanning now...");
+        imageData = await scanImage(imageUrl);
+        if (imageData && imageData.title) {
+          text = imageData.title;
+          console.log("[Webhook] 📸 Image scanned → Title: " + text);
+        }
+      }
+    }
+
     // Log what we found
-    console.log("[Webhook] text:", text ?? "(no text/voice)");
+    console.log("[Webhook] text:", text ?? "(no text/voice/image)");
     console.log("[Webhook] senderPhone:", senderPhone, "| blooNumber:", blooNumber);
 
     if (!text || !senderPhone) {
@@ -477,12 +587,23 @@ export async function POST(req: NextRequest) {
     const quickIntent = fallbackIntent(text);
     console.log("[Webhook] Quick Intent (fallback):", JSON.stringify(quickIntent));
 
-    // Determine source (already extracted audioUrl above)
-    const source = audioUrl ? "🎙️ iMessage Voice" : "📱 iMessage Text";
+    // Determine source (already extracted audioUrl/imageUrl above)
+    const source = imageUrl ? "📸 iMessage Image" : audioUrl ? "🎙️ iMessage Voice" : "📱 iMessage Text";
 
     // 7. CREATE DB ENTRY FIRST (verify it works before sending confirmation)
     let dbSuccess = false;
     let dbError = "";
+
+    // Merge image data into intent if available
+    let finalIntent = { ...quickIntent };
+    let finalDescription = `${source}: "${text.slice(0, 80)}"`;
+    
+    if (imageData) {
+      // Use image dates/times if available, otherwise keep quickIntent values
+      if (imageData.date) finalIntent.date = imageData.date;
+      if (imageData.time) finalIntent.time = imageData.time;
+      if (imageData.description) finalDescription = `${source}: ${imageData.description}`;
+    }
 
     try {
       if (quickIntent.type === "task") {
@@ -492,10 +613,10 @@ export async function POST(req: NextRequest) {
         } else {
           const { error } = await admin.from("tasks").insert({
             user_id: userId, list_id: listId,
-            title: quickIntent.title.slice(0, 200),
-            notes: `${source}: "${text.slice(0, 80)}"`,
-            due_date: quickIntent.date ?? null,
-            due_time: quickIntent.time ?? null,
+            title: finalIntent.title.slice(0, 200),
+            notes: finalDescription,
+            due_date: finalIntent.date ?? null,
+            due_time: finalIntent.time ?? null,
             is_completed: false, is_starred: false,
             position: 0, priority: "medium", progress: 0,
           });
@@ -506,13 +627,13 @@ export async function POST(req: NextRequest) {
             console.log("[Webhook] ✅ Task inserted to DB");
           }
         }
-      } else if (quickIntent.type === "goal") {
+      } else if (finalIntent.type === "goal") {
         const { error } = await admin.from("goals").insert({
           user_id: userId,
-          title: quickIntent.title.slice(0, 200),
-          description: `${source}: "${text.slice(0, 80)}"`,
+          title: finalIntent.title.slice(0, 200),
+          description: finalDescription,
           category: "personal", priority: "medium",
-          progress: 0, target_date: quickIntent.date ?? null,
+          progress: 0, target_date: finalIntent.date ?? null,
         });
         if (error) {
           dbError = error.message;
@@ -520,14 +641,14 @@ export async function POST(req: NextRequest) {
           dbSuccess = true;
           console.log("[Webhook] ✅ Goal inserted to DB");
         }
-      } else if (quickIntent.type === "event") {
-        if (quickIntent.date) {
+      } else if (finalIntent.type === "event") {
+        if (finalIntent.date) {
           const { error } = await admin.from("calendar_events").insert({
             user_id: userId,
-            title: quickIntent.title.slice(0, 200),
-            description: `${source}: "${text.slice(0, 80)}"`,
-            event_date: quickIntent.date,
-            start_time: quickIntent.time ?? null,
+            title: finalIntent.title.slice(0, 200),
+            description: finalDescription,
+            event_date: finalIntent.date,
+            start_time: finalIntent.time ?? null,
             is_completed: false, category: "other", priority: "medium",
           });
           if (error) {
@@ -542,8 +663,8 @@ export async function POST(req: NextRequest) {
             dbError = "Could not create task list";
           } else {
             const { error } = await admin.from("tasks").insert({
-              user_id: userId, list_id: listId, title: quickIntent.title.slice(0, 200), notes: `Via iMessage`,
-              due_time: quickIntent.time ?? null, is_completed: false, is_starred: false, position: 0, priority: "medium", progress: 0
+              user_id: userId, list_id: listId, title: finalIntent.title.slice(0, 200), notes: finalDescription,
+              due_time: finalIntent.time ?? null, is_completed: false, is_starred: false, position: 0, priority: "medium", progress: 0
             });
             if (error) {
               dbError = error.message;
@@ -563,16 +684,16 @@ export async function POST(req: NextRequest) {
     }
 
     // 8. SEND RESPONSE BASED ON DB SUCCESS (await these so confirmation is sent before webhook returns)
-    if (quickIntent.type === "task" && dbSuccess) {
-      await sendBloo(replyTo, `✅ Task created: "${quickIntent.title}"`, blooNumber);
-    } else if (quickIntent.type === "goal" && dbSuccess) {
-      await sendBloo(replyTo, `🎯 Goal set: "${quickIntent.title}"`, blooNumber);
-    } else if (quickIntent.type === "event" && dbSuccess) {
-      if (quickIntent.date) {
-        const dateStr = quickIntent.time ? `${quickIntent.date} at ${quickIntent.time}` : quickIntent.date;
-        await sendBloo(replyTo, `📅 Event added: "${quickIntent.title}" — ${dateStr}`, blooNumber);
+    if (finalIntent.type === "task" && dbSuccess) {
+      await sendBloo(replyTo, `✅ Task created: "${finalIntent.title}"`, blooNumber);
+    } else if (finalIntent.type === "goal" && dbSuccess) {
+      await sendBloo(replyTo, `🎯 Goal set: "${finalIntent.title}"`, blooNumber);
+    } else if (finalIntent.type === "event" && dbSuccess) {
+      if (finalIntent.date) {
+        const dateStr = finalIntent.time ? `${finalIntent.date} at ${finalIntent.time}` : finalIntent.date;
+        await sendBloo(replyTo, `📅 Event added: "${finalIntent.title}" — ${dateStr}`, blooNumber);
       } else {
-        await sendBloo(replyTo, `✅ Added: "${quickIntent.title}" (include a date like "tomorrow" or "Friday" to create a calendar event)`, blooNumber);
+        await sendBloo(replyTo, `✅ Added: "${finalIntent.title}" (include a date like "tomorrow" or "Friday" to create a calendar event)`, blooNumber);
       }
     } else if (dbError) {
       // DB failed - send error
@@ -586,7 +707,7 @@ export async function POST(req: NextRequest) {
     // 9. BACKGROUND: Refine with Gemini if needed (doesn't block response)
     (async () => {
       try {
-        if (quickIntent.type === null) {
+        if (finalIntent.type === null) {
           // Conversational - get AI response in background
           const apiKey = process.env.GEMINI_API_KEY;
           if (apiKey) {
