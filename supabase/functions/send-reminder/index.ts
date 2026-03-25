@@ -20,12 +20,16 @@ const corsHeaders = {
 type ReminderRow = {
   id: string;
   user_id: string;
-  task_id: string;
+  task_id: string | null;
   status: "PENDING" | "PROCESSING" | "SENT" | "FAILED";
   scheduled_at: string;
   attempts: number;
   importance_level: number | null;
   importance_reason: string | null;
+  entity_type?: "TASK" | "EVENT" | "GOAL" | "QUESTION" | null;
+  entity_id?: string | null;
+  alert_kind?: "REMINDER" | "RELATED_QUESTION" | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 function escapeHtml(value: string): string {
@@ -75,6 +79,20 @@ function formatDuePartForEmail(dueDate?: string | null, dueTime?: string | null)
 
   const timeLabel = formatTimeLabel(dueTime);
   return timeLabel ? `${dateLabel} at ${timeLabel}` : dateLabel;
+}
+
+type ReminderEntityPayload = {
+  title: string;
+  notes?: string | null;
+  dueDate?: string | null;
+  dueTime?: string | null;
+  typeLabel: "Task" | "Event" | "Goal" | "Timeline";
+};
+
+function normalizeEntityType(reminder: ReminderRow): "TASK" | "EVENT" | "GOAL" | "QUESTION" {
+  const maybe = String(reminder.entity_type || "").toUpperCase();
+  if (maybe === "EVENT" || maybe === "GOAL" || maybe === "QUESTION") return maybe;
+  return "TASK";
 }
 
 function logInfo(requestId: string, message: string, meta?: Record<string, unknown>) {
@@ -235,7 +253,9 @@ Deno.serve(async (req: Request) => {
 
     const { data: dueReminders, error: dueError } = await supabase
       .from("reminders")
-      .select("id,user_id,task_id,status,scheduled_at,attempts,importance_level,importance_reason")
+      .select(
+        "id,user_id,task_id,entity_type,entity_id,alert_kind,status,scheduled_at,attempts,importance_level,importance_reason,metadata"
+      )
       .eq("channel", "GMAIL")
       .eq("status", "PENDING")
       .lte("scheduled_at", nowIso)
@@ -278,27 +298,126 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      const { data: task, error: taskError } = await supabase
-        .from("tasks")
-        .select("title,notes,due_date,due_time")
-        .eq("id", reminder.task_id)
-        .maybeSingle();
+      const entityType = normalizeEntityType(reminder);
+      let payload: ReminderEntityPayload | null = null;
 
-      if (taskError || !task) {
-        logInfo(requestId, "task lookup failed for reminder", {
-          reminderId: reminder.id,
-          taskId: reminder.task_id,
-          taskError: taskError?.message || "task_not_found",
-        });
-        await supabase
-          .from("reminders")
-          .update({
-            status: "FAILED",
-            last_error: taskError?.message || "Task not found",
-          })
-          .eq("id", reminder.id);
-        results.push({ id: reminder.id, status: "FAILED", error: "Task not found" });
-        continue;
+      if (reminder.alert_kind === "RELATED_QUESTION") {
+        const metadataQuestion =
+          typeof reminder.metadata?.related_question === "string"
+            ? String(reminder.metadata?.related_question)
+            : "";
+        payload = {
+          title: String(reminder.metadata?.related_title || "Timeline update"),
+          notes: metadataQuestion || "There is a potential timeline conflict. Open the app to review.",
+          dueDate: null,
+          dueTime: null,
+          typeLabel: "Timeline",
+        };
+      } else if (entityType === "EVENT" && reminder.entity_id) {
+        const { data: event, error: eventError } = await supabase
+          .from("calendar_events")
+          .select("title,description,event_date,start_time")
+          .eq("id", reminder.entity_id)
+          .maybeSingle();
+
+        if (eventError || !event) {
+          logInfo(requestId, "event lookup failed for reminder", {
+            reminderId: reminder.id,
+            entityId: reminder.entity_id,
+            eventError: eventError?.message || "event_not_found",
+          });
+          await supabase
+            .from("reminders")
+            .update({
+              status: "FAILED",
+              last_error: eventError?.message || "Event not found",
+            })
+            .eq("id", reminder.id);
+          results.push({ id: reminder.id, status: "FAILED", error: "Event not found" });
+          continue;
+        }
+
+        payload = {
+          title: String(event.title || "Event reminder"),
+          notes: event.description || "",
+          dueDate: event.event_date || null,
+          dueTime: event.start_time || null,
+          typeLabel: "Event",
+        };
+      } else if (entityType === "GOAL" && reminder.entity_id) {
+        const { data: goal, error: goalError } = await supabase
+          .from("goals")
+          .select("title,description,target_date")
+          .eq("id", reminder.entity_id)
+          .maybeSingle();
+
+        if (goalError || !goal) {
+          logInfo(requestId, "goal lookup failed for reminder", {
+            reminderId: reminder.id,
+            entityId: reminder.entity_id,
+            goalError: goalError?.message || "goal_not_found",
+          });
+          await supabase
+            .from("reminders")
+            .update({
+              status: "FAILED",
+              last_error: goalError?.message || "Goal not found",
+            })
+            .eq("id", reminder.id);
+          results.push({ id: reminder.id, status: "FAILED", error: "Goal not found" });
+          continue;
+        }
+
+        payload = {
+          title: String(goal.title || "Goal reminder"),
+          notes: goal.description || "",
+          dueDate: goal.target_date || null,
+          dueTime: null,
+          typeLabel: "Goal",
+        };
+      } else {
+        const taskId = reminder.task_id || reminder.entity_id;
+        if (!taskId) {
+          await supabase
+            .from("reminders")
+            .update({
+              status: "FAILED",
+              last_error: "Missing task_id/entity_id for task reminder",
+            })
+            .eq("id", reminder.id);
+          results.push({ id: reminder.id, status: "FAILED", error: "Missing task id" });
+          continue;
+        }
+        const { data: task, error: taskError } = await supabase
+          .from("tasks")
+          .select("title,notes,due_date,due_time")
+          .eq("id", taskId)
+          .maybeSingle();
+
+        if (taskError || !task) {
+          logInfo(requestId, "task lookup failed for reminder", {
+            reminderId: reminder.id,
+            taskId,
+            taskError: taskError?.message || "task_not_found",
+          });
+          await supabase
+            .from("reminders")
+            .update({
+              status: "FAILED",
+              last_error: taskError?.message || "Task not found",
+            })
+            .eq("id", reminder.id);
+          results.push({ id: reminder.id, status: "FAILED", error: "Task not found" });
+          continue;
+        }
+
+        payload = {
+          title: String(task.title || "Task reminder"),
+          notes: task.notes || "",
+          dueDate: task.due_date || null,
+          dueTime: task.due_time || null,
+          typeLabel: "Task",
+        };
       }
 
       const authUser = await supabase.auth.admin.getUserById(reminder.user_id);
@@ -320,14 +439,15 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      const duePart = formatDuePartForEmail(task.due_date, task.due_time);
-      const safeTitle = escapeHtml(task.title || "Task reminder");
+      const duePart = formatDuePartForEmail(payload?.dueDate, payload?.dueTime);
+      const safeTitle = escapeHtml(payload?.title || "Timeline reminder");
       const safeDuePart = escapeHtml(duePart);
-      const safeNotes = task.notes ? escapeHtml(task.notes) : "";
+      const safeNotes = payload?.notes ? escapeHtml(payload.notes) : "";
       const safeReason = reminder.importance_reason
         ? escapeHtml(reminder.importance_reason)
         : "";
-      const subject = `Reminder: ${task.title}`;
+      const subjectPrefix = reminder.alert_kind === "RELATED_QUESTION" ? "Question" : "Reminder";
+      const subject = `${subjectPrefix}: ${payload?.title || "Timeline item"}`;
       const html = `
         <div style="margin:0;padding:0;background:#f2f5fb;">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f2f5fb;padding:28px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
@@ -336,7 +456,9 @@ Deno.serve(async (req: Request) => {
                 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:620px;background:#ffffff;border:1px solid #d6deee;border-radius:16px;box-shadow:0 12px 30px rgba(11,33,74,0.10);overflow:hidden;">
                   <tr>
                     <td style="padding:22px 24px 16px;background:#0f2748;color:#f4f8ff;">
-                      <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#b8cff9;">Calendar Reminder</div>
+                      <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#b8cff9;">${
+                        payload?.typeLabel || "Timeline"
+                      } ${reminder.alert_kind === "RELATED_QUESTION" ? "Question" : "Reminder"}</div>
                       <h1 style="margin:8px 0 0;font-size:24px;line-height:1.25;color:#ffffff;">${safeTitle}</h1>
                     </td>
                   </tr>

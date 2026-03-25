@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { requireAuthedUser } from "@/lib/api-auth";
+import { queueGoalGmailReminders } from "@/lib/reminders";
 
 export const runtime = "nodejs";
 
@@ -43,6 +44,30 @@ export async function POST(req: Request) {
 
     if (error) {
       return NextResponse.json({ error: `Failed to create goal: ${error.message}` }, { status: 500 });
+    }
+
+    if (data?.id && data?.user_id) {
+      try {
+        await admin
+          .from("reminders")
+          .delete()
+          .eq("entity_type", "GOAL")
+          .eq("entity_id", data.id)
+          .in("status", ["PENDING", "PROCESSING", "FAILED"]);
+
+        await queueGoalGmailReminders({
+          admin,
+          userId: data.user_id,
+          goalId: data.id,
+          title: String(data.title || title),
+          description: String(data.description || description),
+          targetDate: data.target_date || null,
+          clientTimezone: String(body?.timezone || "UTC"),
+          priority: data.priority || priority,
+        });
+      } catch (reminderError) {
+        console.error("Failed to queue timeline alerts for goal create:", reminderError);
+      }
     }
 
     return NextResponse.json({ goal: data }, { status: 200 });

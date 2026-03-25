@@ -8,6 +8,8 @@ type ImportanceDecision = {
 };
 
 export type AutoTaskPriority = "critical" | "high" | "medium";
+export type TimelineEntityType = "TASK" | "EVENT" | "GOAL" | "QUESTION";
+export type TimelineAlertKind = "REMINDER" | "RELATED_QUESTION";
 
 function isValidTimeZone(timeZone?: string | null): timeZone is string {
   if (!timeZone || !timeZone.trim()) return false;
@@ -366,4 +368,248 @@ export async function classifyTaskImportance(params: {
   }).catch(() => null);
 
   return llmDecision || fallbackImportance(params);
+}
+
+function mapPriorityToImportanceLevel(
+  priority?: string | null,
+  fallbackLevel: ImportanceLevel = 2
+): ImportanceLevel {
+  const normalized = String(priority || "").toLowerCase();
+  if (normalized === "critical") return 3;
+  if (normalized === "high") return 2;
+  if (normalized === "medium") return 2;
+  if (normalized === "low") return 1;
+  return fallbackLevel;
+}
+
+function getTimelineOffsetsForLevel(entityType: TimelineEntityType, level: ImportanceLevel): number[] {
+  if (entityType === "EVENT") {
+    if (level === 3) return [7 * 24 * 60, 24 * 60, 4 * 60, 60];
+    if (level === 2) return [24 * 60, 2 * 60];
+    return [60];
+  }
+
+  if (entityType === "GOAL") {
+    if (level === 3) return [7 * 24 * 60, 24 * 60];
+    if (level === 2) return [24 * 60];
+    return [];
+  }
+
+  if (entityType === "QUESTION") {
+    return [0];
+  }
+
+  return getOffsetsForLevel(level);
+}
+
+async function insertTimelineRowsWithFallback(
+  admin: SupabaseClient,
+  rows: Array<Record<string, unknown>>
+): Promise<void> {
+  const { error } = await admin.from("reminders").insert(rows as any);
+  if (!error) return;
+
+  const message = String(error.message || "");
+  const missingEntityColumns =
+    /column .*entity_type.* does not exist/i.test(message) ||
+    /column .*entity_id.* does not exist/i.test(message) ||
+    /column .*alert_kind.* does not exist/i.test(message);
+
+  if (!missingEntityColumns) {
+    throw new Error(`Failed to queue timeline reminders: ${message}`);
+  }
+
+  // Backward-compatible fallback for older schemas (task reminders only).
+  const legacyRows = rows.map((row) => {
+    const legacyTaskId = row.task_id;
+    if (!legacyTaskId) {
+      throw new Error(
+        "Timeline alert schema is missing. Run the new reminders migration to enable event/goal alerts."
+      );
+    }
+
+    return {
+      user_id: row.user_id,
+      task_id: legacyTaskId,
+      channel: row.channel,
+      status: row.status,
+      scheduled_at: row.scheduled_at,
+      importance_level: row.importance_level,
+      importance_reason: row.importance_reason,
+      metadata: row.metadata,
+    };
+  });
+
+  const { error: fallbackError } = await admin.from("reminders").insert(legacyRows as any);
+  if (fallbackError) {
+    throw new Error(`Failed to queue reminders: ${fallbackError.message}`);
+  }
+}
+
+export async function queueTimelineGmailReminders(params: {
+  admin: SupabaseClient;
+  userId: string;
+  entityType: TimelineEntityType;
+  entityId: string;
+  title: string;
+  notes?: string;
+  dueDate?: string | null;
+  dueTime?: string | null;
+  clientTimezone?: string | null;
+  source?: string;
+  alertKind?: TimelineAlertKind;
+  precomputedDecision?: ImportanceDecision;
+  extraMetadata?: Record<string, unknown>;
+}): Promise<number> {
+  const dueAt = parseDueAt(params.dueDate, params.dueTime, params.clientTimezone);
+  if (!dueAt) return 0;
+
+  const decision =
+    params.precomputedDecision ||
+    fallbackImportance({
+      title: params.title,
+      notes: params.notes,
+    });
+  const offsets =
+    params.alertKind === "RELATED_QUESTION"
+      ? [0]
+      : getTimelineOffsetsForLevel(params.entityType, decision.level);
+  if (!offsets.length) return 0;
+
+  const now = Date.now();
+  const minScheduledAtMs = now + 30 * 1000;
+  const usedScheduledAtMs = new Set<number>();
+  const rows = offsets.map((offsetMinutes) => {
+    const scheduledAtMs = dueAt.getTime() - offsetMinutes * 60 * 1000;
+    let candidateMs = Math.max(scheduledAtMs, minScheduledAtMs);
+    while (usedScheduledAtMs.has(candidateMs)) {
+      candidateMs += 1000;
+    }
+    usedScheduledAtMs.add(candidateMs);
+
+    return {
+      user_id: params.userId,
+      task_id: params.entityType === "TASK" ? params.entityId : null,
+      entity_type: params.entityType,
+      entity_id: params.entityId,
+      alert_kind: params.alertKind || "REMINDER",
+      channel: "GMAIL",
+      status: "PENDING",
+      scheduled_at: new Date(candidateMs).toISOString(),
+      importance_level: decision.level,
+      importance_reason: decision.reason,
+      metadata: {
+        timeline_entity: params.entityType,
+        reminder_profile: decision.profile,
+        offset_minutes: offsetMinutes,
+        client_timezone: params.clientTimezone || null,
+        source: params.source || "timeline_auto_create",
+        ...(params.extraMetadata || {}),
+      },
+    };
+  });
+
+  await insertTimelineRowsWithFallback(params.admin, rows);
+  return rows.length;
+}
+
+export async function queueEventGmailReminders(params: {
+  admin: SupabaseClient;
+  userId: string;
+  eventId: string;
+  title: string;
+  description?: string;
+  eventDate?: string | null;
+  startTime?: string | null;
+  clientTimezone?: string | null;
+  priority?: string | null;
+}): Promise<number> {
+  if (!params.eventDate) return 0;
+  const level = mapPriorityToImportanceLevel(params.priority, 2);
+
+  return queueTimelineGmailReminders({
+    admin: params.admin,
+    userId: params.userId,
+    entityType: "EVENT",
+    entityId: params.eventId,
+    title: params.title,
+    notes: params.description || "",
+    dueDate: params.eventDate,
+    dueTime: params.startTime || "09:00:00",
+    clientTimezone: params.clientTimezone || "UTC",
+    source: "event_create_or_update",
+    precomputedDecision: {
+      level,
+      reason: "Event priority + context based timeline reminder",
+      profile: level === 3 ? "7d, 24h, 4h, 1h" : level === 2 ? "24h, 2h" : "1h",
+    },
+  });
+}
+
+export async function queueGoalGmailReminders(params: {
+  admin: SupabaseClient;
+  userId: string;
+  goalId: string;
+  title: string;
+  description?: string;
+  targetDate?: string | null;
+  clientTimezone?: string | null;
+  priority?: string | null;
+}): Promise<number> {
+  if (!params.targetDate) return 0;
+  const level = mapPriorityToImportanceLevel(params.priority, 2);
+
+  return queueTimelineGmailReminders({
+    admin: params.admin,
+    userId: params.userId,
+    entityType: "GOAL",
+    entityId: params.goalId,
+    title: params.title,
+    notes: params.description || "",
+    dueDate: params.targetDate,
+    dueTime: "09:00:00",
+    clientTimezone: params.clientTimezone || "UTC",
+    source: "goal_create_or_update",
+    precomputedDecision: {
+      level,
+      reason: "Goal target-date reminder",
+      profile: level === 3 ? "7d, 24h" : level === 2 ? "24h" : "no-email",
+    },
+  });
+}
+
+export async function queueRelatedQuestionAlert(params: {
+  admin: SupabaseClient;
+  userId: string;
+  entityType: Exclude<TimelineEntityType, "QUESTION">;
+  entityId: string;
+  title: string;
+  question: string;
+  clientTimezone?: string | null;
+}): Promise<number> {
+  const pseudoDate = new Date(Date.now() + 45 * 1000).toISOString().slice(0, 10);
+  const pseudoTime = new Date(Date.now() + 45 * 1000).toISOString().slice(11, 19);
+
+  return queueTimelineGmailReminders({
+    admin: params.admin,
+    userId: params.userId,
+    entityType: params.entityType,
+    entityId: params.entityId,
+    title: params.title,
+    notes: params.question,
+    dueDate: pseudoDate,
+    dueTime: pseudoTime,
+    clientTimezone: params.clientTimezone || "UTC",
+    source: "timeline_related_question",
+    alertKind: "RELATED_QUESTION",
+    extraMetadata: {
+      related_title: params.title,
+      related_question: params.question,
+    },
+    precomputedDecision: {
+      level: 2,
+      reason: "Timeline relationship/question prompt",
+      profile: "immediate",
+    },
+  });
 }

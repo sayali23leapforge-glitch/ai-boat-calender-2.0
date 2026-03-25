@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
+import { queueEventGmailReminders, queueRelatedQuestionAlert } from "@/lib/reminders";
 
 export const runtime = "edge";
 
@@ -243,6 +244,58 @@ export async function POST(req: NextRequest) {
 
     if (error) {
       return NextResponse.json({ error: error.message, debug: { insertEvent } }, { status: 500 });
+    }
+
+    if (data?.id && data?.user_id) {
+      try {
+        await admin
+          .from("reminders")
+          .delete()
+          .eq("entity_type", "EVENT")
+          .eq("entity_id", data.id)
+          .in("status", ["PENDING", "PROCESSING", "FAILED"]);
+
+        await queueEventGmailReminders({
+          admin,
+          userId: data.user_id,
+          eventId: data.id,
+          title: String(data.title || ""),
+          description: String(data.description || ""),
+          eventDate: data.event_date || null,
+          startTime: data.start_time || null,
+          clientTimezone: tz,
+          priority: data.priority || null,
+        });
+
+        if (data.start_time && data.end_time) {
+          const { data: overlaps } = await admin
+            .from("calendar_events")
+            .select("id,title,start_time,end_time")
+            .eq("user_id", data.user_id)
+            .eq("event_date", data.event_date)
+            .neq("id", data.id)
+            .not("start_time", "is", null)
+            .not("end_time", "is", null)
+            .lt("start_time", data.end_time)
+            .gt("end_time", data.start_time)
+            .limit(1);
+
+          if ((overlaps || []).length > 0) {
+            const conflict = overlaps![0];
+            await queueRelatedQuestionAlert({
+              admin,
+              userId: data.user_id,
+              entityType: "EVENT",
+              entityId: data.id,
+              title: String(data.title || "Event"),
+              question: `This overlaps with "${conflict.title}". Should I suggest alternate slots?`,
+              clientTimezone: tz,
+            });
+          }
+        }
+      } catch (reminderError) {
+        console.error("Failed to queue timeline alerts for event create:", reminderError);
+      }
     }
 
     return NextResponse.json({ data });

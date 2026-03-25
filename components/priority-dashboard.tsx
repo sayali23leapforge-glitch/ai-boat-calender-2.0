@@ -143,7 +143,7 @@ export function PriorityDashboard({ userId }: PriorityDashboardProps) {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="h-full min-h-0 p-6 flex flex-col gap-6 overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -218,9 +218,9 @@ export function PriorityDashboard({ userId }: PriorityDashboardProps) {
       </div>
 
       {/* Priority Tasks */}
-      <div className="space-y-4">
+      <div className="flex-1 min-h-0 flex flex-col space-y-4">
         <h2 className="text-lg font-semibold">Priority Tasks</h2>
-        <div className="space-y-3">
+        <div className="flex-1 min-h-0 space-y-3 overflow-y-auto pr-1">
           {isLoading && tasks.length === 0 ? (
             <Card className="p-6 text-center text-sm text-muted-foreground">Loading priority data…</Card>
           ) : sortedTasks.length === 0 ? (

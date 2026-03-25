@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
-import { Plus, Calendar, CheckCircle2, TrendingUp, Edit, Trash2, Loader2 } from "lucide-react"
+import { Plus, Calendar, CheckCircle2, TrendingUp, Edit, Trash2, Loader2, BellRing } from "lucide-react"
 import { toast } from "sonner"
 import { supabase } from "@/lib/supabase"
 import {
@@ -286,6 +286,19 @@ export function GoalManager({ userId }: GoalManagerProps) {
     return tasks.filter((task) => task.completed).length
   }
 
+  const formatOffsetLabel = (offsetMinutes?: number | null) => {
+    if (!offsetMinutes || offsetMinutes <= 0) return null
+    if (offsetMinutes % (24 * 60) === 0) {
+      const days = offsetMinutes / (24 * 60)
+      return `${days}d before target`
+    }
+    if (offsetMinutes % 60 === 0) {
+      const hours = offsetMinutes / 60
+      return `${hours}h before target`
+    }
+    return `${offsetMinutes}m before target`
+  }
+
   if (isLoading) {
     return (
       <div className="p-6 flex items-center justify-center min-h-[400px]">
@@ -536,6 +549,68 @@ export function GoalManager({ userId }: GoalManagerProps) {
                       : "—"}
                   </span>
                 </div>
+              </div>
+
+              {/* Reminder Schedule */}
+              <div className="space-y-3 rounded-lg border p-4 bg-muted/10">
+                <div className="flex items-center gap-2">
+                  <BellRing className="h-4 w-4 text-primary" />
+                  <h4 className="font-medium">Email alert schedule</h4>
+                </div>
+                {(selectedGoal.reminder_schedule || []).length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    {selectedGoal.target_date
+                      ? "No email alerts are currently queued for this goal."
+                      : "Set a target date to generate scheduled email alerts."}
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {[...(selectedGoal.reminder_schedule || [])]
+                      .sort(
+                        (a, b) =>
+                          new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime()
+                      )
+                      .map((reminder, index) => {
+                        const statusClass =
+                          reminder.status === "SENT"
+                            ? "bg-[color:var(--priority-low)]/10 text-[color:var(--priority-low)]"
+                            : reminder.status === "FAILED"
+                              ? "bg-[color:var(--priority-critical)]/10 text-[color:var(--priority-critical)]"
+                              : "bg-primary/10 text-primary"
+                        const offsetLabel = formatOffsetLabel(reminder.offset_minutes)
+                        const isRelatedQuestion = reminder.alert_kind === "RELATED_QUESTION"
+
+                        return (
+                          <div key={`${reminder.scheduled_at}-${index}`} className="flex items-start gap-3">
+                            <div className="mt-1 h-2.5 w-2.5 rounded-full bg-primary/80" />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${statusClass}`}>
+                                  {reminder.status}
+                                </span>
+                                {isRelatedQuestion ? (
+                                  <span className="text-[11px] px-2 py-0.5 rounded-full font-medium bg-amber-500/10 text-amber-700">
+                                    Related question
+                                  </span>
+                                ) : offsetLabel ? (
+                                  <span className="text-[11px] text-muted-foreground">{offsetLabel}</span>
+                                ) : null}
+                              </div>
+                              <p className="text-sm">
+                                {new Date(reminder.scheduled_at).toLocaleString(undefined, {
+                                  weekday: "short",
+                                  month: "short",
+                                  day: "numeric",
+                                  hour: "numeric",
+                                  minute: "2-digit",
+                                })}
+                              </p>
+                            </div>
+                          </div>
+                        )
+                      })}
+                  </div>
+                )}
               </div>
 
               {/* Tasks */}
