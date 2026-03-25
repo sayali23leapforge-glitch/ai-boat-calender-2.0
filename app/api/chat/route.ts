@@ -783,6 +783,45 @@ async function callGemini(geminiApiKey: string, messages: any[]) {
   };
 }
 
+// ===========================
+// Deterministic pre-filter: catches obvious greetings/pleasantries
+// without spending an LLM call on them.
+// ===========================
+function isObviouslyNonActionable(text: string): boolean {
+  const t = text.trim();
+  // Pattern covers greetings, pleasantries, single-word acks, and filler phrases
+  const PATTERN =
+    /^(hi+|hello+|hey+|yo+|howdy|good\s+(morning|afternoon|evening|night|day)|thanks+|thank\s+you|ty|thx|ok+|okay|k|sure|got\s+it|sounds\s+good|yep+|yup+|nope|nah|bye+|goodbye|see\s+ya|cya|cool+|great+|awesome+|perfect+|nice+|wow+|lol+|haha+|hehe+|👍|✅|🙏)[\s!?.🙂😊]*$/i;
+  return PATTERN.test(t);
+}
+
+// ===========================
+// Intent classifier for non-interactive clients (voice, iMessage)
+// Returns "action" | "ambiguous" | "non_actionable"
+// ===========================
+async function classifyVoiceIntent(
+  geminiApiKey: string,
+  text: string
+): Promise<"action" | "ambiguous" | "non_actionable"> {
+  const prompt = `Classify the following voice message into exactly one category. Reply with ONLY the category word, nothing else.
+
+Categories:
+- action: The user is explicitly requesting something to be done, tracked, or created. Must have a clear intent to log/track (e.g., "remind me to call the dentist", "add a task to buy milk", "schedule a meeting tomorrow at 3", "don't forget to pay rent on Friday").
+- ambiguous: A possible action is mentioned but the user is NOT clearly asking for it to be tracked (e.g., "I should probably call the dentist", "I might need to fix the bugs", "I was thinking about going to the gym").
+- non_actionable: A greeting, pleasantry, acknowledgment, question, or statement with no request to create or track anything (e.g., "hi", "thanks", "ok", "sounds good", "how are you", "what's on my calendar today").
+
+Voice message: "${text.replace(/"/g, "'")}"
+
+Reply with exactly one word: action, ambiguous, or non_actionable`;
+
+  const resp = await callGemini(geminiApiKey, [{ role: "user", content: prompt }]);
+  if (!resp.ok) return "action"; // fail open — let Planner handle it
+  const result = (resp.data?.choices?.[0]?.message?.content || "").trim().toLowerCase();
+  if (result === "non_actionable") return "non_actionable";
+  if (result === "ambiguous") return "ambiguous";
+  return "action";
+}
+
 function formatEventLine(e: DbEvent) {
   const st = e.start_time ? e.start_time.slice(0, 5) : "All day";
   const en = e.end_time ? e.end_time.slice(0, 5) : "";
@@ -879,6 +918,52 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // --- DETERMINISTIC PRE-FILTER: short-circuit obvious greetings/pleasantries ---
+    if (isObviouslyNonActionable(lastUserText)) {
+      console.log("[/api/chat] Pre-filter: obvious non-actionable message, skipping planner");
+      const greetResp = await callGemini(geminiApiKey, [
+        { role: "system", content: "You are a friendly assistant. Reply naturally and briefly to the user's message. 1-2 sentences max." },
+        { role: "user", content: lastUserText },
+      ]);
+      const greetText = greetResp.data?.choices?.[0]?.message?.content || "Hey! How can I help?";
+      return NextResponse.json({
+        assistantText: greetText,
+        toolCalls: [],
+        requestId: rid,
+      } satisfies ChatApiResponse);
+    }
+    // --- END PRE-FILTER ---
+
+    // Parse early so the pre-flight gate can use it before the Planner runs
+    const executeServerIntents = Boolean(body?.executeServerIntents);
+
+    // Pre-flight intent gate for non-interactive clients (voice shortcut, iMessage)
+    // This is a hard code-level guard — the Planner never runs for non-actionable messages.
+    if (executeServerIntents) {
+      const intentClass = await classifyVoiceIntent(geminiApiKey, lastUserText);
+
+      if (intentClass === "non_actionable") {
+        const lower = lastUserText.toLowerCase().trim();
+        let reply = "Got it!";
+        if (/^(hi|hello|hey|good morning|good evening|good night|howdy)/i.test(lower)) {
+          reply = "Hey! Say something like 'Remind me to call the dentist tomorrow' to create a task.";
+        } else if (/^(thanks|thank you|thx|ty)/i.test(lower)) {
+          reply = "You're welcome!";
+        }
+        return NextResponse.json({ assistantText: reply, toolCalls: [], requestId: rid } satisfies ChatApiResponse);
+      }
+
+      if (intentClass === "ambiguous") {
+        return NextResponse.json({
+          assistantText: "Did you want me to create a task for this, or were you just letting me know?",
+          toolCalls: [],
+          requestId: rid,
+        } satisfies ChatApiResponse);
+      }
+
+      // intentClass === "action" — proceed to Planner
+    }
+
     const contextMessages = rawMessages.slice(-10).map((m: any) => {
       if (m?.role === "user" && typeof m?.content === "string") {
         return { role: "user", content: normalizeUserTextForLLM(m.content) };
@@ -921,19 +1006,31 @@ CRITICAL: Return ONLY a valid JSON object:
   "items": [ ...PlannerItem ]
 }
 
-=== RULES FOR isConversationOnly ===
-Set isConversationOnly=true ONLY if the message is:
-- A greeting ("Hi", "Hello", "Hey")
-- A casual response ("Thanks", "Cool", "Ok", "Sure")
-- A question seeking information (NOT creation): "Did you create...", "What is...", "When is..."
-- Random chatter or filler messages
-- Asking clarifying questions about existing items
+=== INTENT CLASSIFICATION (MANDATORY FIRST STEP) ===
+Before emitting any items, you MUST classify the user's message.
 
-Set isConversationOnly=false if the message clearly requests creation/action:
-- "Create a task called X"
-- "Schedule a meeting"
-- "Add X to my list"
-- "Make a note about X"
+SET isConversationOnly=true AND items=[] for ALL of the following:
+- Greetings: "Hi", "Hello", "Hey", "Good morning", "Yo", "Howdy"
+- Pleasantries / acknowledgments: "Thanks", "Thank you", "OK", "Okay", "Sure", "Got it", "Sounds good", "Yep", "Yup", "Cool", "Great", "Awesome", "Perfect", "Nice"
+- Pure questions (no creation intent): "What is X?", "When is my meeting?", "Did you add that?", "How many tasks do I have?"
+- Filler / vague / unclear: "Hmm", "Interesting", "Ok then", any message ≤ 3 words that contains NO clear action verb or subject to create
+- Statements of fact with no request: "I had a dentist visit", "It's raining today"
+
+SET isConversationOnly=false ONLY when the message CLEARLY implies something to create or track:
+- Explicit creation: "Add a task for...", "Create an event...", "Schedule a meeting..."
+- Clear intent to track: "Remind me to...", "I need to...", "Don't forget to..."
+- Deliverable with deadline: "Submit the report by Friday", "Pay rent on the 1st"
+- Appointment being booked: "Meeting with John at 3pm tomorrow"
+
+=== AMBIGUOUS INTENT ===
+If you CANNOT confidently determine whether the user wants something created
+(e.g., "dentist appointment", "gym tomorrow", "call mom"):
+- Set isConversationOnly=true
+- Set assistantText to EXACTLY ONE clarifying question:
+  "Did you want me to create a task/event for this, or were you just letting me know?"
+- Set items: []
+
+NEVER guess or assume. When in doubt, ask. Do NOT create tasks from ambiguous messages.
 
 === CRITICAL RULES FOR ITEMS ===
 - ONLY emit items if isConversationOnly=false
@@ -970,6 +1067,34 @@ PRIORITY EXTRACTION:
 - "medium", "normal" => priority: "medium"
 - "low", "whenever" => priority: "low"
 - If no priority word mentioned, default to "medium"
+
+INTENT GATE — evaluate this BEFORE emitting any task/event/goal item:
+
+NEVER emit a task/event/goal if the message is any of:
+- A greeting or pleasantry: "Hi", "Hello", "Hey", "Good morning", "Thanks", "Thank you", "OK", "Okay", "Sure", "Yep", "Got it", "Sounds good", "No problem", "You're welcome"
+- A vague acknowledgment with no clear action: "Noted", "I see", "Interesting", "Makes sense"
+- A question asking for information (not requesting something to be tracked): "What's on my calendar?", "How many tasks do I have?"
+- A short filler message: one or two words with no actionable content
+- Unclear or ambiguous messages where you cannot confidently identify WHAT needs to be done
+
+ONLY emit a task/event/goal when the message clearly implies:
+- Something needs to be done: "Remind me to...", "I need to...", "Don't forget to...", "Make sure to..."
+- A deliverable or deadline: "Submit the report by Friday", "Pay rent on the 1st"
+- An explicit instruction to track/create: "Add a task for...", "Create an event for...", "Schedule a meeting..."
+- A clear appointment or scheduled event with a specific date/time
+
+WHEN INTENT IS AMBIGUOUS (a possible action is visible but the user may just be sharing, not requesting tracking):
+- Respond ONLY with assistantText asking ONE clarifying question. Set items: [].
+- Use: "Did you want me to create a task for this, or were you just letting me know?"
+
+Examples applying the INTENT GATE:
+- "Hi" → assistantText: "Hey! How can I help you today?", items: []
+- "Thanks" → assistantText: "You're welcome!", items: []
+- "OK" → assistantText: "Got it!", items: []
+- "I had a meeting today" → assistantText: "Did you want me to log something from that meeting, or were you just letting me know?", items: []
+- "I should probably call the dentist" → assistantText: "Did you want me to create a task to call the dentist?", items: []
+- "Remind me to call the dentist tomorrow" → items: [{ kind: "task", title: "Call the dentist", dueDate: "YYYY-MM-DD" }]
+- "Add a task: finish the report by Friday" → items: [{ kind: "task", title: "Finish the report", dueDate: "YYYY-MM-DD" }]
 
 Rules for items:
 - If user asks "agenda/calendar today/tomorrow/this week" => kind="query_agenda_v2"
