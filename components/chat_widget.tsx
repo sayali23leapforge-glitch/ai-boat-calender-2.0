@@ -167,6 +167,18 @@ type ChatApiResponse = {
   assistantText: string;
   toolCalls: ToolCall[];
   requestId?: string;
+  pendingEventDraft?: PendingEventDraft | null;
+};
+
+type PendingEventDraft = {
+  kind: "event_conflict_resolution";
+  date: string;
+  requestedStartTime?: string;
+  requestedEndTime?: string;
+  durationMinutes: number;
+  pendingTool: ToolCall;
+  slots: Array<{ start_time: string; end_time: string; reason: string }>;
+  createdAt: string;
 };
 
 type ChatWidgetProps = {
@@ -526,6 +538,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
   // ✅ NEW: keep last user text so tool execution can parse duration/date even after input is cleared
   const lastSentUserTextRef = useRef<string>("");
+  const pendingEventDraftRef = useRef<PendingEventDraft | null>(null);
 
   const apiMessages = useMemo(
     () =>
@@ -1001,6 +1014,8 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
         setTimeout(() => {
           onSetActiveView("calendar");
         }, 1000);
+
+        pendingEventDraftRef.current = null;
       } catch (e: any) {
         console.error("create_event failed:", e);
         toast.error(e?.message ?? "Failed to create event");
@@ -1294,6 +1309,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
         window.dispatchEvent(new CustomEvent("refreshCalendar"));
         onSetActiveView("calendar");
+        pendingEventDraftRef.current = null;
       } catch (e: any) {
         console.error("update_event_by_title failed:", e);
         toast.error(e?.message ?? "Failed to update event");
@@ -1593,6 +1609,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
       setRecentEntities({
         lastActiveView: "calendar",
       });
+      pendingEventDraftRef.current = null;
       return;
     }
 
@@ -1724,6 +1741,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
           context: {
             timezone: tz,
             recentEntities,
+            pendingEventDraft: pendingEventDraftRef.current,
           },
         }),
       });
@@ -1738,6 +1756,10 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
           { role: "assistant", content: data?.assistantText || `Error: ${resp.status}` },
         ]);
         return;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(data, "pendingEventDraft")) {
+        pendingEventDraftRef.current = data.pendingEventDraft ?? null;
       }
 
       const assistantText = data?.assistantText || "Done.";

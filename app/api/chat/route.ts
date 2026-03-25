@@ -23,8 +23,13 @@ type ToolCall =
       name: "request_disambiguation";
       arguments: {
         prompt: string;
-        kind: "task" | "event" | "goal";
-        choices: Array<{ key: string; title: string; subtitle?: string }>;
+        kind: "task" | "event" | "goal" | "slot";
+        choices: Array<{
+          key: string;
+          title: string;
+          subtitle?: string;
+          payload?: { date?: string; time?: string; endTime?: string; durationMinutes?: number };
+        }>;
         pendingTool: ToolCall;
       };
     }
@@ -151,6 +156,22 @@ type ChatApiResponse = {
   requestId?: string;
   silentMode?: boolean; // If true, don't show assistant message, show toast instead
   successMessage?: string; // Toast message to show (e.g., "✓ Task added")
+  pendingEventDraft?: PendingEventDraft | null;
+};
+
+type PendingEventDraft = {
+  kind: "event_conflict_resolution";
+  date: string;
+  requestedStartTime?: string;
+  requestedEndTime?: string;
+  durationMinutes: number;
+  pendingTool: {
+    id?: string;
+    name: "create_event" | "update_event_by_title";
+    arguments: Record<string, any>;
+  };
+  slots: Array<{ start_time: string; end_time: string; reason: string }>;
+  createdAt: string;
 };
 
 
@@ -455,6 +476,50 @@ function looksLikeFreeTimeQuery(text: string): boolean {
   return /\b(free|available|availability|slot|open time|open slots|when can i|when am i free)\b/.test(s);
 }
 
+function resolveSlotSelectionFromReply(
+  reply: string,
+  draft?: PendingEventDraft | null
+): { slot?: { start_time: string; end_time: string; reason: string }; cancel?: boolean } {
+  if (!draft || !Array.isArray(draft.slots) || draft.slots.length === 0) return {};
+  const text = (reply || "").trim().toLowerCase();
+  if (!text) return {};
+
+  if (/\b(cancel|skip|nevermind|never mind|leave it|don't schedule|do not schedule)\b/.test(text)) {
+    return { cancel: true };
+  }
+
+  const ordinals: Array<{ re: RegExp; idx: number }> = [
+    { re: /\b(first|1st|option\s*1|slot\s*1|#1)\b/, idx: 0 },
+    { re: /\b(second|2nd|option\s*2|slot\s*2|#2)\b/, idx: 1 },
+    { re: /\b(third|3rd|option\s*3|slot\s*3|#3)\b/, idx: 2 },
+    { re: /\b(fourth|4th|option\s*4|slot\s*4|#4)\b/, idx: 3 },
+    { re: /\b(fifth|5th|option\s*5|slot\s*5|#5)\b/, idx: 4 },
+  ];
+  for (const o of ordinals) {
+    if (o.re.test(text) && draft.slots[o.idx]) return { slot: draft.slots[o.idx] };
+  }
+
+  if (/\b(next|another slot|any slot|best slot|available slot)\b/.test(text)) {
+    return { slot: draft.slots[0] };
+  }
+
+  const explicitTime = extractTimeFromUserText(text);
+  if (explicitTime) {
+    const exact = draft.slots.find((s) => normalizeHHMM(s.start_time) === explicitTime);
+    if (exact) return { slot: exact };
+
+    const target = toMinutes(explicitTime);
+    if (target !== null) {
+      const nearest = [...draft.slots]
+        .map((s) => ({ s, d: Math.abs((toMinutes(s.start_time) ?? target) - target) }))
+        .sort((a, b) => a.d - b.d)[0]?.s;
+      if (nearest) return { slot: nearest };
+    }
+  }
+
+  return {};
+}
+
 function scoreMatch(title: string, q: string): number {
   const t = (title || "").toLowerCase();
   const query = (q || "").toLowerCase().trim();
@@ -510,6 +575,34 @@ function extractTimeFromUserText(text: string): string | undefined {
   }
 
   return undefined;
+}
+
+function extractTimeRangeFromUserText(text: string): { time?: string; endTime?: string } {
+  const s = String(text || "").toLowerCase();
+  if (!s) return {};
+
+  // "from 10:00 am to 11:00 am", "10am-11am", "10:00 to 11:00"
+  const range =
+    s.match(
+      /\b(?:from\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*(?:to|\-|\–)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i
+    ) ||
+    s.match(/\b(?:from\s+)?(\d{1,2}:\d{2})\s*(?:to|\-|\–)\s*(\d{1,2}:\d{2})\b/i);
+
+  if (range) {
+    if (range.length >= 7) {
+      const start = parseTimeToHHMM(`${range[1]}${range[2] ? `:${range[2]}` : ""} ${range[3]}`);
+      const end = parseTimeToHHMM(`${range[4]}${range[5] ? `:${range[5]}` : ""} ${range[6]}`);
+      return { time: start, endTime: end };
+    }
+    if (range.length === 3) {
+      const start = parseTimeToHHMM(range[1]);
+      const end = parseTimeToHHMM(range[2]);
+      return { time: start, endTime: end };
+    }
+  }
+
+  const single = extractTimeFromUserText(s);
+  return single ? { time: single } : {};
 }
 
 /**
@@ -943,6 +1036,10 @@ export async function POST(req: NextRequest) {
     const rawMessages = Array.isArray(body?.messages) ? body.messages : [];
     const context = body?.context ?? {};
     const tz: string = context?.timezone || "Asia/Kolkata";
+    const pendingEventDraft: PendingEventDraft | null =
+      context?.pendingEventDraft && typeof context.pendingEventDraft === "object"
+        ? (context.pendingEventDraft as PendingEventDraft)
+        : null;
 
     const recentEntities: RecentEntities =
       context?.recentEntities && typeof context.recentEntities === "object" ? context.recentEntities : {};
@@ -968,6 +1065,70 @@ export async function POST(req: NextRequest) {
 
     const lastUserTextRaw = (lastUserMsg?.content || "").toString();
     const lastUserText = normalizeUserTextForLLM(lastUserTextRaw);
+
+    // Fast-path: resolve a previously suggested conflict slot from follow-up user reply.
+    if (pendingEventDraft?.kind === "event_conflict_resolution") {
+      const selection = resolveSlotSelectionFromReply(lastUserText, pendingEventDraft);
+      if (selection.cancel) {
+        return NextResponse.json({
+          assistantText: "Okay, I won't schedule that meeting for now.",
+          toolCalls: [{ id: `${rid}:view`, name: "set_active_view", arguments: { view: "calendar" } }],
+          requestId: rid,
+          pendingEventDraft: null,
+        } satisfies ChatApiResponse);
+      }
+
+      if (selection.slot) {
+        const baseArgs: Record<string, any> = {
+          ...pendingEventDraft.pendingTool.arguments,
+          date: pendingEventDraft.date,
+          time: selection.slot.start_time,
+          endTime: selection.slot.end_time,
+        };
+        const patchedTool: ToolCall =
+          pendingEventDraft.pendingTool.name === "create_event"
+            ? {
+                id: pendingEventDraft.pendingTool.id,
+                name: "create_event",
+                arguments: {
+                  title: String(baseArgs.title || "New event"),
+                  description: baseArgs.description,
+                  date: String(baseArgs.date),
+                  time: baseArgs.time,
+                  endTime: baseArgs.endTime,
+                  location: baseArgs.location,
+                  category: baseArgs.category,
+                  priority: baseArgs.priority,
+                },
+              }
+            : {
+                id: pendingEventDraft.pendingTool.id,
+                name: "update_event_by_title",
+                arguments: {
+                  titleQuery: String(baseArgs.titleQuery || baseArgs.title || "event"),
+                  title: baseArgs.title,
+                  description: baseArgs.description,
+                  date: String(baseArgs.date),
+                  time: baseArgs.time,
+                  endTime: baseArgs.endTime,
+                  location: baseArgs.location,
+                  category: baseArgs.category,
+                  priority: baseArgs.priority,
+                  isCompleted: baseArgs.isCompleted,
+                },
+              };
+
+        return NextResponse.json({
+          assistantText: `Perfect — scheduling it at ${selection.slot.start_time} on ${pendingEventDraft.date}.`,
+          toolCalls: [
+            { id: `${rid}:view`, name: "set_active_view", arguments: { view: "calendar" } },
+            { ...patchedTool, id: `${rid}:slot_apply` },
+          ],
+          requestId: rid,
+          pendingEventDraft: null,
+        } satisfies ChatApiResponse);
+      }
+    }
 
     if (!lastUserText.trim()) {
       return NextResponse.json(
@@ -1550,9 +1711,17 @@ Keep responses concise (1-2 sentences usually).`;
         }
 
         // --- Time resolution ---
-        // Prefer planner time; if missing AND this is a date-only follow-up, carry forward from history
-        const rawStart = (item as any).time || (isDateOnlyReply(lastUserText) ? carry.time : undefined);
-        const rawEnd = (item as any).endTime || (isDateOnlyReply(lastUserText) ? carry.endTime : undefined);
+        // Prefer planner output; then parse explicit range/time from latest user text;
+        // finally use carry-forward time for date-only follow-ups.
+        const parsedRange = extractTimeRangeFromUserText(lastUserText);
+        const rawStart =
+          (item as any).time ||
+          parsedRange.time ||
+          (isDateOnlyReply(lastUserText) ? carry.time : undefined);
+        const rawEnd =
+          (item as any).endTime ||
+          parsedRange.endTime ||
+          (isDateOnlyReply(lastUserText) ? carry.endTime : undefined);
 
         const start = normalizeHHMM(rawStart);
         const end = normalizeHHMM(rawEnd);
@@ -1627,8 +1796,9 @@ Keep responses concise (1-2 sentences usually).`;
           resolveDateToken((item as any).date, tz) ||
           (/^\d{4}-\d{2}-\d{2}$/.test(String((item as any).date || "")) ? String((item as any).date) : undefined);
 
-        const start = normalizeHHMM(item.time);
-        const end = normalizeHHMM(item.endTime);
+        const parsedRange = extractTimeRangeFromUserText(lastUserText);
+        const start = normalizeHHMM(item.time || parsedRange.time);
+        const end = normalizeHHMM(item.endTime || parsedRange.endTime);
 
         (item as any).date = resolvedDate;
 
@@ -1934,6 +2104,16 @@ Keep responses concise (1-2 sentences usually).`;
         limit: 5,
       });
 
+      const eventActionTool = clientToolCalls.find(
+        (tc) => tc.name === "create_event" || tc.name === "update_event_by_title"
+      ) as
+        | {
+            id?: string;
+            name: "create_event" | "update_event_by_title";
+            arguments: Record<string, any>;
+          }
+        | undefined;
+
       const filteredClient = clientToolCalls.filter(
         (tc) => tc.name !== "create_event" && tc.name !== "update_event_by_title"
       );
@@ -1945,16 +2125,52 @@ Keep responses concise (1-2 sentences usually).`;
 
       const slotLines = slots.map((s) => `• ${s.start_time}–${s.end_time} (${s.reason})`).join("\n");
 
+      const slotChoices = slots.map((s, idx) => ({
+        key: `slot_${idx + 1}`,
+        title: `${s.start_time}–${s.end_time}`,
+        subtitle: s.reason,
+        payload: { date, time: s.start_time, endTime: s.end_time, durationMinutes: dur },
+      }));
+
       const toolCallsWithIds: ToolCall[] = [
         { id: `${rid}:view`, name: "set_active_view", arguments: { view: "calendar" } },
         ...filteredClient.map((tc, idx) => ({ ...tc, id: tc.id || `${rid}:c_${idx}` })),
       ];
+      if (eventActionTool && slotChoices.length > 0) {
+        toolCallsWithIds.push({
+          id: `${rid}:slot_pick`,
+          name: "request_disambiguation",
+          arguments: {
+            prompt: `Pick a slot to schedule "${eventActionTool.arguments.title || "this event"}":`,
+            kind: "slot",
+            choices: slotChoices,
+            pendingTool: eventActionTool as unknown as ToolCall,
+          },
+        });
+      }
 
       return NextResponse.json({
         assistantText:
           `That time conflicts with your calendar on ${date} (${startTime}${endTime ? `–${endTime}` : ""}).\n\nConflicts:\n${conflictLines}\n\nSuggested open slots (${dur} min):\n${slotLines}\n\nReply with one of the suggested times (e.g., “move it to ${slots[0]?.start_time}”).`,
         toolCalls: toolCallsWithIds,
         requestId: rid,
+        pendingEventDraft:
+          eventActionTool && slots.length
+            ? {
+                kind: "event_conflict_resolution",
+                date,
+                requestedStartTime: startTime,
+                requestedEndTime: endTime,
+                durationMinutes: dur,
+                pendingTool: eventActionTool,
+                slots: slots.map((s) => ({
+                  start_time: s.start_time,
+                  end_time: s.end_time,
+                  reason: s.reason,
+                })),
+                createdAt: new Date().toISOString(),
+              }
+            : null,
       } satisfies ChatApiResponse);
     }
 
@@ -2100,6 +2316,7 @@ Keep responses concise (1-2 sentences usually).`;
       requestId: rid,
       silentMode: isSilentOperation,
       successMessage: isSilentOperation ? successMessage : undefined,
+      pendingEventDraft: null,
     } satisfies ChatApiResponse);
   } catch (e: any) {
     console.error("api/chat error:", e);

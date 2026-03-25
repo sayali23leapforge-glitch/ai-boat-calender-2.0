@@ -31,6 +31,8 @@ export function EventDetailPanel({
     (a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime()
   )
   const hasEventTime = Boolean(event.event_date)
+  const startTime = event.start_time?.substring(0, 5)
+  const endTime = event.end_time?.substring(0, 5)
 
   return (
     <>
@@ -78,14 +80,13 @@ export function EventDetailPanel({
                   <div className="text-sm font-semibold text-gray-900">
                     {format(new Date(event.event_date), "EEEE, MMMM d, yyyy")}
                   </div>
-                  {event.start_time && event.end_time && (
-                    <div className="text-sm text-gray-700 mt-1.5 font-mono font-medium">
-                      {formatTimeRange(
-                        event.start_time.substring(0, 5),
-                        event.end_time.substring(0, 5)
-                      )}
-                    </div>
-                  )}
+                  <div className="text-sm text-gray-700 mt-1.5 font-mono font-medium">
+                    {startTime && endTime
+                      ? formatTimeRange(startTime, endTime)
+                      : startTime
+                      ? formatTimeRange(startTime, startTime)
+                      : "Time not set"}
+                  </div>
                 </div>
               </div>
 
