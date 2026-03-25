@@ -342,6 +342,7 @@ export async function POST(req: NextRequest) {
 
     console.log("[Webhook] ======== INCOMING", new Date().toISOString(), "========");
     console.log("[Webhook] event:", payload.event, "| keys:", Object.keys(payload).join(", "));
+    console.log("[Webhook] Full payload:", JSON.stringify(payload, null, 2).slice(0, 2000));
 
     // 4. Extract fields - Try text first, then voice
     let text = extractText(payload);
@@ -352,6 +353,8 @@ export async function POST(req: NextRequest) {
     // If no text, extract audio URL (but DON'T transcribe yet - do in background for 1-sec response)
     if (!text) {
       audioUrl = extractAudioUrl(payload);
+      console.log("[Webhook] No text found. Checking for audio...");
+      console.log("[Webhook] audioUrl extracted:", audioUrl);
       if (audioUrl) {
         console.log("[Webhook] 🎙️ Voice message detected, will transcribe in background...");
         text = "🎙️ Voice message (transcribing...)";  // Placeholder for quick DB entry
