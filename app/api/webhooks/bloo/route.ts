@@ -616,7 +616,7 @@ export async function POST(req: NextRequest) {
       
       // For dates/times: Image provides defaults, but user's explicit date context ("tomorrow", "Friday") should override
       // Only use image date if user didn't specify a date in their text
-      const userHasDateContext = /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(payload.text ?? "");
+      const userHasDateContext = /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(String(text || ""));
       if (imageData.date && !userHasDateContext) {
         finalIntent.date = imageData.date;  // Use image date only if user didn't specify
       }
