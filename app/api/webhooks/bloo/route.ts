@@ -461,11 +461,11 @@ export async function POST(req: NextRequest) {
       console.log("[Webhook] ❌ No user found for blooNumber:", blooNumber, "senderPhone:", senderPhone);
       console.log("[Webhook] All bloo_bound_numbers:", allProfiles?.map((p: any) => p.bloo_bound_number));
       console.log("[Webhook] All phones:", allProfiles?.map((p: any) => p.phone));
-      sendBloo(
+      await sendBloo(
         replyTo,
         "👋 Hi! I'm Cal, your calendar assistant. 📱\n\nI couldn't recognize your account. Please:\n\n1. Open the Calendar app\n2. Go to Settings ⚙️\n3. Save your:\n   📞 Personal phone: +919920261793\n   📲 Bloo bound number: +1(626)742-3142\n\nThen message me again and I'll create tasks, events, and goals for you! 🚀",
         blooNumber
-      ).catch(e => console.error("[Webhook] Send error:", e?.message));
+      );
       return NextResponse.json({ ok: true }, { status: 200 });
     }
 
@@ -558,25 +558,25 @@ export async function POST(req: NextRequest) {
       console.error("[Webhook] DB operation error:", dbError);
     }
 
-    // 8. SEND RESPONSE BASED ON DB SUCCESS
+    // 8. SEND RESPONSE BASED ON DB SUCCESS (await these so confirmation is sent before webhook returns)
     if (quickIntent.type === "task" && dbSuccess) {
-      sendBloo(replyTo, `✅ Task created: "${quickIntent.title}"`, blooNumber);
+      await sendBloo(replyTo, `✅ Task created: "${quickIntent.title}"`, blooNumber);
     } else if (quickIntent.type === "goal" && dbSuccess) {
-      sendBloo(replyTo, `🎯 Goal set: "${quickIntent.title}"`, blooNumber);
+      await sendBloo(replyTo, `🎯 Goal set: "${quickIntent.title}"`, blooNumber);
     } else if (quickIntent.type === "event" && dbSuccess) {
       if (quickIntent.date) {
         const dateStr = quickIntent.time ? `${quickIntent.date} at ${quickIntent.time}` : quickIntent.date;
-        sendBloo(replyTo, `📅 Event added: "${quickIntent.title}" — ${dateStr}`, blooNumber);
+        await sendBloo(replyTo, `📅 Event added: "${quickIntent.title}" — ${dateStr}`, blooNumber);
       } else {
-        sendBloo(replyTo, `✅ Added: "${quickIntent.title}" (include a date like "tomorrow" or "Friday" to create a calendar event)`, blooNumber);
+        await sendBloo(replyTo, `✅ Added: "${quickIntent.title}" (include a date like "tomorrow" or "Friday" to create a calendar event)`, blooNumber);
       }
     } else if (dbError) {
       // DB failed - send error
-      sendBloo(replyTo, `❌ Error: ${dbError.slice(0, 60)}. Please try again.`, blooNumber);
+      await sendBloo(replyTo, `❌ Error: ${dbError.slice(0, 60)}. Please try again.`, blooNumber);
     } else {
       // Conversational response - no DB involved
       const fallbackReply = "Hey there! 👋 I'm Cal, your calendar assistant! 📱\n\n😊 I'm doing great, thanks for asking!\n\nWhat would you like to create today?\n\n📝 **TASK** - \"Buy groceries\" or \"Call mom\"\n📅 **EVENT** - \"Meeting tomorrow at 2pm\" or \"Dinner Friday 7pm\"\n🎯 **GOAL** - \"Learn guitar daily\" or \"Exercise 3x week\"\n\nOr just chat with me! 💬";
-      sendBloo(replyTo, fallbackReply, blooNumber);
+      await sendBloo(replyTo, fallbackReply, blooNumber);
     }
 
     // 9. BACKGROUND: Refine with Gemini if needed (doesn't block response)
