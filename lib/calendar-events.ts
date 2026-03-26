@@ -12,8 +12,20 @@ export type CalendarEvent = {
   source: 'manual' | 'extracted' | 'google_calendar' | 'email'
   source_id?: string
   is_completed: boolean
+  reminder_schedule?: CalendarEventReminderScheduleItem[]
   created_at: string
   updated_at: string
+}
+
+export type CalendarEventReminderStatus = 'PENDING' | 'PROCESSING' | 'SENT' | 'FAILED'
+
+export type CalendarEventReminderScheduleItem = {
+  scheduled_at: string
+  status: CalendarEventReminderStatus
+  sent_at?: string | null
+  importance_level?: number | null
+  offset_minutes?: number | null
+  alert_kind?: 'REMINDER' | 'RELATED_QUESTION' | null
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {

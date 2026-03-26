@@ -3,9 +3,10 @@
 import { useState } from "react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
-import { Star } from "lucide-react"
+import { BellRing, Star } from "lucide-react"
 import { type Task, formatDueDate, isTaskOverdue, type TaskPriority } from "@/lib/tasks"
 import { cn } from "@/lib/utils"
+import { formatDistanceToNow } from "date-fns"
 
 interface TaskCardProps {
   task: Task
@@ -19,6 +20,11 @@ export function TaskCard({ task, onToggleComplete, onToggleStarred, onClick }: T
   const dueDateText = formatDueDate(task.due_date, task.due_time)
   const isOverdue = isTaskOverdue(task.due_date, task.due_time)
   const priorityColor = priorityColorMap[task.priority]
+  const pendingReminders = (task.reminder_schedule ?? []).filter((item) => item.status === "PENDING")
+  const nextReminder = pendingReminders
+    .map((item) => new Date(item.scheduled_at))
+    .filter((date) => !Number.isNaN(date.getTime()))
+    .sort((a, b) => a.getTime() - b.getTime())[0]
 
   return (
     <div
@@ -109,6 +115,22 @@ export function TaskCard({ task, onToggleComplete, onToggleStarred, onClick }: T
               )}
             >
               {dueDateText}
+            </Badge>
+          </div>
+        )}
+
+        {pendingReminders.length > 0 && (
+          <div className="mt-2">
+            <Badge
+              variant="secondary"
+              className="text-xs font-medium bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-500/20"
+            >
+              <BellRing className="h-3 w-3 mr-1" />
+              {nextReminder
+                ? `Mail alerts ${pendingReminders.length} • next ${formatDistanceToNow(nextReminder, {
+                    addSuffix: true,
+                  })}`
+                : `Mail alerts ${pendingReminders.length}`}
             </Badge>
           </div>
         )}

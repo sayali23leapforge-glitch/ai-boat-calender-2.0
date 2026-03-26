@@ -35,15 +35,45 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: `Failed to fetch goal tasks: ${tasksError.message}` }, { status: 500 });
     }
 
+    const { data: reminders } = await admin
+      .from("reminders")
+      .select("entity_id, scheduled_at, status, sent_at, importance_level, alert_kind, metadata")
+      .eq("user_id", user.id)
+      .eq("entity_type", "GOAL")
+      .in("entity_id", goalIds)
+      .order("scheduled_at", { ascending: true });
+
     const tasksByGoalId = (tasks || []).reduce<Record<string, any[]>>((acc, t: any) => {
       if (!acc[t.goal_id]) acc[t.goal_id] = [];
       acc[t.goal_id].push(t);
       return acc;
     }, {});
 
+    const remindersByGoalId = (reminders || []).reduce<Record<string, any[]>>((acc, reminder: any) => {
+      const offsetRaw = reminder?.metadata?.offset_minutes;
+      const parsedOffset =
+        typeof offsetRaw === "number"
+          ? offsetRaw
+          : typeof offsetRaw === "string"
+            ? Number(offsetRaw)
+            : null;
+
+      if (!acc[reminder.entity_id]) acc[reminder.entity_id] = [];
+      acc[reminder.entity_id].push({
+        scheduled_at: reminder.scheduled_at,
+        status: reminder.status,
+        sent_at: reminder.sent_at,
+        importance_level: reminder.importance_level,
+        offset_minutes: Number.isFinite(parsedOffset as number) ? parsedOffset : null,
+        alert_kind: reminder.alert_kind ?? null,
+      });
+      return acc;
+    }, {});
+
     const payload = goals.map((g: any) => ({
       ...g,
       tasks: tasksByGoalId[g.id] || [],
+      reminder_schedule: remindersByGoalId[g.id] || [],
     }));
 
     return NextResponse.json({ goals: payload }, { status: 200 });

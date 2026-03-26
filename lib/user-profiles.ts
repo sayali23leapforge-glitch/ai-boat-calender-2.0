@@ -6,6 +6,7 @@ export type UserProfile = {
   full_name?: string | null
   avatar_url?: string | null
   phone?: string | null
+  reminder_prefs?: string | null
   onboarding_complete: boolean
   last_sign_in?: string | null
   created_at: string

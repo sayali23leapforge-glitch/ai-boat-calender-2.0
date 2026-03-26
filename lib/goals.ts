@@ -12,8 +12,20 @@ export type Goal = {
   priority: GoalPriority;
   progress: number;
   target_date: string | null;
+  reminder_schedule?: GoalReminderScheduleItem[];
   created_at: string;
   updated_at: string;
+};
+
+export type GoalReminderStatus = "PENDING" | "PROCESSING" | "SENT" | "FAILED";
+
+export type GoalReminderScheduleItem = {
+  scheduled_at: string;
+  status: GoalReminderStatus;
+  sent_at?: string | null;
+  importance_level?: number | null;
+  offset_minutes?: number | null;
+  alert_kind?: "REMINDER" | "RELATED_QUESTION" | null;
 };
 
 export type GoalTask = {

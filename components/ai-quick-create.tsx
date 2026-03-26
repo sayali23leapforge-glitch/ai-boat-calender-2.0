@@ -17,7 +17,6 @@ import {
   CheckSquare,
   Target,
   Mic,
-  MicOff,
   ListChecks,
   MapPin,
   Clock3,
@@ -38,7 +37,6 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { cn } from "@/lib/utils"
 import { VoiceInputButton } from "@/components/voice-input-button"
 
 interface AIQuickCreateProps {
@@ -52,7 +50,6 @@ type TaskFormState = {
   listId: string
   title: string
   description: string
-  priority: TaskPriority
   dueDate: string
   dueTime: string
   goal: string
@@ -60,13 +57,6 @@ type TaskFormState = {
   location: string
   syncToCalendar: boolean
 }
-
-const priorityOptions: Array<{ value: TaskPriority; label: string; badge: string }> = [
-  { value: "critical", label: "Critical", badge: "bg-[color:var(--priority-critical)]/10 text-[color:var(--priority-critical)] border border-[color:var(--priority-critical)]/30" },
-  { value: "high", label: "High", badge: "bg-[color:var(--priority-high)]/10 text-[color:var(--priority-high)] border border-[color:var(--priority-high)]/30" },
-  { value: "medium", label: "Medium", badge: "bg-[color:var(--priority-medium)]/10 text-[color:var(--priority-medium)] border border-[color:var(--priority-medium)]/30" },
-  { value: "low", label: "Low", badge: "bg-[color:var(--priority-low)]/15 text-[color:var(--priority-low)] border border-[color:var(--priority-low)]/30" },
-]
 
 export function AIQuickCreate({ isOpen, onClose, userId, onSuccess }: AIQuickCreateProps) {
   const [input, setInput] = useState("")
@@ -186,7 +176,6 @@ export function AIQuickCreate({ isOpen, onClose, userId, onSuccess }: AIQuickCre
       listId: defaultList?.id || "",
       title: parsed.title || "",
       description: parsed.description || "",
-      priority: (parsed.priority as TaskPriority) || "medium",
       dueDate: parsed.dueDate || parsed.date || "",
       dueTime: parsed.time || "",
       goal: parsed.goal || "",
@@ -301,7 +290,7 @@ export function AIQuickCreate({ isOpen, onClose, userId, onSuccess }: AIQuickCre
         }
 
         const estimated = taskForm?.estimatedHours ? Number(taskForm.estimatedHours) : null
-        const resolvedPriority: TaskPriority = taskForm?.priority || (dataToCreate.priority as TaskPriority) || "medium"
+        const resolvedPriority: TaskPriority = (dataToCreate.priority as TaskPriority) || "medium"
         const shouldStar = resolvedPriority === "critical" || resolvedPriority === "high"
         
         console.log("[AIQuickCreate] Creating task", { title: taskForm?.title || dataToCreate.title })
@@ -310,7 +299,6 @@ export function AIQuickCreate({ isOpen, onClose, userId, onSuccess }: AIQuickCre
           dueDate: taskForm?.dueDate || dataToCreate.dueDate || undefined,
           dueTime: taskForm?.dueTime || dataToCreate.time || undefined,
           isStarred: shouldStar,
-          priority: resolvedPriority,
           goal: taskForm?.goal || undefined,
           estimatedHours: estimated,
           location: taskForm?.location || dataToCreate.location || undefined,
@@ -452,25 +440,10 @@ export function AIQuickCreate({ isOpen, onClose, userId, onSuccess }: AIQuickCre
             </div>
 
             <div>
-              <Label className="text-xs text-muted-foreground">Priority</Label>
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                {priorityOptions.map((option) => (
-                  <Button
-                    key={option.value}
-                    type="button"
-                    variant={taskForm.priority === option.value ? "default" : "outline"}
-                    className={cn(
-                      "justify-start border text-left",
-                      taskForm.priority === option.value
-                        ? option.badge
-                        : "bg-transparent hover:bg-muted text-muted-foreground",
-                    )}
-                    onClick={() => updateTaskForm("priority", option.value)}
-                  >
-                    <span className="text-xs font-medium">{option.label}</span>
-                  </Button>
-                ))}
-              </div>
+              <Label className="text-xs text-muted-foreground">Importance</Label>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Auto-classified by AI from the task title and description.
+              </p>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

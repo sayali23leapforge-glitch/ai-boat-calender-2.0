@@ -29,6 +29,7 @@ lerna-debug.log*
 # env files
 .env
 .env.local
+_env.local
 .env.development.local
 .env.test.local
 .env.production.local

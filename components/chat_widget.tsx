@@ -167,6 +167,18 @@ type ChatApiResponse = {
   assistantText: string;
   toolCalls: ToolCall[];
   requestId?: string;
+  pendingEventDraft?: PendingEventDraft | null;
+};
+
+type PendingEventDraft = {
+  kind: "event_conflict_resolution";
+  date: string;
+  requestedStartTime?: string;
+  requestedEndTime?: string;
+  durationMinutes: number;
+  pendingTool: ToolCall;
+  slots: Array<{ start_time: string; end_time: string; reason: string }>;
+  createdAt: string;
 };
 
 type ChatWidgetProps = {
@@ -192,6 +204,7 @@ type RecentEntities = {
 };
 
 const RECENT_ENTITIES_LS_KEY = "edge_assistant_recent_entities_v1";
+const CHAT_WIDGET_POSITION_LS_KEY = "edge_assistant_chat_widget_position_v1";
 
 type ChatMessage =
   | { role: "user" | "assistant"; content: string }
@@ -492,11 +505,15 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
   console.log("[ChatWidget] Props received:", { userId, userIdType: typeof userId });
   
   const [open, setOpen] = useState(true);
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  const widgetRef = useRef<HTMLDivElement | null>(null);
+  const dragOffsetRef = useRef({ x: 0, y: 0 });
   const [iMessageConnected, setIMessageConnected] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
 
@@ -521,6 +538,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
   // ✅ NEW: keep last user text so tool execution can parse duration/date even after input is cleared
   const lastSentUserTextRef = useRef<string>("");
+  const pendingEventDraftRef = useRef<PendingEventDraft | null>(null);
 
   const apiMessages = useMemo(
     () =>
@@ -529,6 +547,20 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
         .map((m) => ({ role: m.role, content: (m as any).content })),
     [chat]
   );
+
+  function clampWidgetPosition(next: { x: number; y: number }) {
+    if (typeof window === "undefined") return next;
+    const widgetWidth = widgetRef.current?.offsetWidth ?? 380;
+    const widgetHeight = widgetRef.current?.offsetHeight ?? 420;
+    const minX = 8;
+    const minY = 8;
+    const maxX = Math.max(minX, window.innerWidth - widgetWidth - 8);
+    const maxY = Math.max(minY, window.innerHeight - widgetHeight - 8);
+    return {
+      x: Math.min(Math.max(next.x, minX), maxX),
+      y: Math.min(Math.max(next.y, minY), maxY),
+    };
+  }
 
   function setRecentEntities(patch: Partial<RecentEntities>) {
     const next: RecentEntities = {
@@ -545,6 +577,62 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
     recentEntitiesRef.current = loaded;
     setRecentEntitiesLoaded(true);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = safeJsonParse<{ x: number; y: number }>(
+      window.localStorage.getItem(CHAT_WIDGET_POSITION_LS_KEY) || ""
+    );
+    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+      setPosition(saved);
+      return;
+    }
+
+    const defaultWidth = Math.min(380, Math.floor(window.innerWidth * 0.92));
+    const defaultHeight = 520;
+    setPosition({
+      x: Math.max(8, window.innerWidth - defaultWidth - 16),
+      y: Math.max(8, window.innerHeight - defaultHeight - 16),
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!position || typeof window === "undefined") return;
+    window.localStorage.setItem(CHAT_WIDGET_POSITION_LS_KEY, JSON.stringify(position));
+  }, [position]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      if (!position) return;
+      setPosition((prev) => (prev ? clampWidgetPosition(prev) : prev));
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [position]);
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const next = {
+        x: event.clientX - dragOffsetRef.current.x,
+        y: event.clientY - dragOffsetRef.current.y,
+      };
+      setPosition(clampWidgetPosition(next));
+    };
+
+    const handlePointerUp = () => {
+      setIsDragging(false);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [isDragging]);
 
   // Handle paste events for images
   useEffect(() => {
@@ -926,6 +1014,8 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
         setTimeout(() => {
           onSetActiveView("calendar");
         }, 1000);
+
+        pendingEventDraftRef.current = null;
       } catch (e: any) {
         console.error("create_event failed:", e);
         toast.error(e?.message ?? "Failed to create event");
@@ -1219,6 +1309,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
         window.dispatchEvent(new CustomEvent("refreshCalendar"));
         onSetActiveView("calendar");
+        pendingEventDraftRef.current = null;
       } catch (e: any) {
         console.error("update_event_by_title failed:", e);
         toast.error(e?.message ?? "Failed to update event");
@@ -1518,6 +1609,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
       setRecentEntities({
         lastActiveView: "calendar",
       });
+      pendingEventDraftRef.current = null;
       return;
     }
 
@@ -1649,6 +1741,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
           context: {
             timezone: tz,
             recentEntities,
+            pendingEventDraft: pendingEventDraftRef.current,
           },
         }),
       });
@@ -1665,12 +1758,19 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
         return;
       }
 
+      if (Object.prototype.hasOwnProperty.call(data, "pendingEventDraft")) {
+        pendingEventDraftRef.current = data.pendingEventDraft ?? null;
+      }
+
       const assistantText = data?.assistantText || "Done.";
       
       // Handle silent mode (no assistant message, just toast)
       if (data?.silentMode) {
         if (data?.successMessage) {
           toast.success(data.successMessage, { duration: 2000 });
+          setChat((prev) => [...prev, { role: "assistant", content: data.successMessage as string }]);
+        } else {
+          setChat((prev) => [...prev, { role: "assistant", content: "Done — I've handled that." }]);
         }
       } else if (assistantText.trim()) {
         setChat((prev) => [...prev, { role: "assistant", content: assistantText }]);
@@ -1698,11 +1798,38 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
     }
   }
 
+  function startDragging(event: React.PointerEvent<HTMLDivElement>) {
+    const target = event.target as HTMLElement;
+    if (target.closest("button, input, textarea, select, a, [role='button']")) {
+      return;
+    }
+    if (!widgetRef.current || !position) return;
+    const rect = widgetRef.current.getBoundingClientRect();
+    dragOffsetRef.current = {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    };
+    setIsDragging(true);
+  }
+
   return (
-    <div className="fixed right-4 bottom-4 z-[9999] w-[380px] max-w-[92vw]">
+    <div
+      ref={widgetRef}
+      className="fixed z-[9999] w-[380px] max-w-[92vw]"
+      style={{
+        left: position?.x ?? 16,
+        top: position?.y ?? 16,
+      }}
+    >
       <div className="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-xl shadow-2xl overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border/60 bg-muted/30">
+        <div
+          className={cn(
+            "flex items-center justify-between px-4 py-3 border-b border-border/60 bg-muted/30 select-none",
+            isDragging ? "cursor-grabbing" : "cursor-grab"
+          )}
+          onPointerDown={startDragging}
+        >
           <div className="flex items-center gap-2">
             <div className="h-9 w-9 rounded-xl bg-primary/10 flex items-center justify-center">
               <Sparkles className="h-4 w-4 text-primary" />

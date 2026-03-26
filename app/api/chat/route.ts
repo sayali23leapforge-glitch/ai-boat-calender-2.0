@@ -23,8 +23,13 @@ type ToolCall =
       name: "request_disambiguation";
       arguments: {
         prompt: string;
-        kind: "task" | "event" | "goal";
-        choices: Array<{ key: string; title: string; subtitle?: string }>;
+        kind: "task" | "event" | "goal" | "slot";
+        choices: Array<{
+          key: string;
+          title: string;
+          subtitle?: string;
+          payload?: { date?: string; time?: string; endTime?: string; durationMinutes?: number };
+        }>;
         pendingTool: ToolCall;
       };
     }
@@ -151,6 +156,22 @@ type ChatApiResponse = {
   requestId?: string;
   silentMode?: boolean; // If true, don't show assistant message, show toast instead
   successMessage?: string; // Toast message to show (e.g., "✓ Task added")
+  pendingEventDraft?: PendingEventDraft | null;
+};
+
+type PendingEventDraft = {
+  kind: "event_conflict_resolution";
+  date: string;
+  requestedStartTime?: string;
+  requestedEndTime?: string;
+  durationMinutes: number;
+  pendingTool: {
+    id?: string;
+    name: "create_event" | "update_event_by_title";
+    arguments: Record<string, any>;
+  };
+  slots: Array<{ start_time: string; end_time: string; reason: string }>;
+  createdAt: string;
 };
 
 
@@ -162,6 +183,72 @@ type RecentEntities = {
   lastActiveView?: AllowedView | null;
   updatedAt?: number | null;
 };
+
+function extractReminderPreferenceInstruction(message: string): string | null {
+  const text = (message || "").trim();
+  if (!text) return null;
+
+  const lowered = text.toLowerCase();
+  const preferencePattern =
+    /\b(stop emailing me about|don't email me about|do not email me about|no email reminders for|email me about)\b/;
+
+  if (!preferencePattern.test(lowered)) {
+    return null;
+  }
+
+  return text;
+}
+
+async function appendReminderPreference(params: {
+  userId: string;
+  instruction: string;
+}) {
+  const admin = getSupabaseAdminClient();
+
+  const { data: profileExisting } = await admin
+    .from("user_profiles")
+    .select("id, reminder_prefs")
+    .eq("user_id", params.userId)
+    .maybeSingle();
+
+  const now = new Date().toISOString();
+  const line = `[${now}] ${params.instruction}`;
+  const merged = profileExisting?.reminder_prefs
+    ? `${profileExisting.reminder_prefs}\n${line}`
+    : line;
+
+  if (profileExisting?.id) {
+    await admin
+      .from("user_profiles")
+      .update({ reminder_prefs: merged })
+      .eq("id", profileExisting.id);
+    return;
+  }
+
+  // Fallback path for projects that still store reminder prefs in user_preferences.
+  const { data: legacyExisting } = await admin
+    .from("user_preferences")
+    .select("id, reminder_prefs")
+    .eq("user_id", params.userId)
+    .maybeSingle();
+
+  if (legacyExisting?.id) {
+    await admin
+      .from("user_preferences")
+      .update({
+        reminder_prefs: legacyExisting.reminder_prefs
+          ? `${legacyExisting.reminder_prefs}\n${line}`
+          : line,
+      })
+      .eq("id", legacyExisting.id);
+    return;
+  }
+
+  await admin.from("user_preferences").insert({
+    user_id: params.userId,
+    reminder_prefs: line,
+  });
+}
 
 function makeRequestId() {
   const g: any = globalThis as any;
@@ -389,6 +476,50 @@ function looksLikeFreeTimeQuery(text: string): boolean {
   return /\b(free|available|availability|slot|open time|open slots|when can i|when am i free)\b/.test(s);
 }
 
+function resolveSlotSelectionFromReply(
+  reply: string,
+  draft?: PendingEventDraft | null
+): { slot?: { start_time: string; end_time: string; reason: string }; cancel?: boolean } {
+  if (!draft || !Array.isArray(draft.slots) || draft.slots.length === 0) return {};
+  const text = (reply || "").trim().toLowerCase();
+  if (!text) return {};
+
+  if (/\b(cancel|skip|nevermind|never mind|leave it|don't schedule|do not schedule)\b/.test(text)) {
+    return { cancel: true };
+  }
+
+  const ordinals: Array<{ re: RegExp; idx: number }> = [
+    { re: /\b(first|1st|option\s*1|slot\s*1|#1)\b/, idx: 0 },
+    { re: /\b(second|2nd|option\s*2|slot\s*2|#2)\b/, idx: 1 },
+    { re: /\b(third|3rd|option\s*3|slot\s*3|#3)\b/, idx: 2 },
+    { re: /\b(fourth|4th|option\s*4|slot\s*4|#4)\b/, idx: 3 },
+    { re: /\b(fifth|5th|option\s*5|slot\s*5|#5)\b/, idx: 4 },
+  ];
+  for (const o of ordinals) {
+    if (o.re.test(text) && draft.slots[o.idx]) return { slot: draft.slots[o.idx] };
+  }
+
+  if (/\b(next|another slot|any slot|best slot|available slot)\b/.test(text)) {
+    return { slot: draft.slots[0] };
+  }
+
+  const explicitTime = extractTimeFromUserText(text);
+  if (explicitTime) {
+    const exact = draft.slots.find((s) => normalizeHHMM(s.start_time) === explicitTime);
+    if (exact) return { slot: exact };
+
+    const target = toMinutes(explicitTime);
+    if (target !== null) {
+      const nearest = [...draft.slots]
+        .map((s) => ({ s, d: Math.abs((toMinutes(s.start_time) ?? target) - target) }))
+        .sort((a, b) => a.d - b.d)[0]?.s;
+      if (nearest) return { slot: nearest };
+    }
+  }
+
+  return {};
+}
+
 function scoreMatch(title: string, q: string): number {
   const t = (title || "").toLowerCase();
   const query = (q || "").toLowerCase().trim();
@@ -423,6 +554,55 @@ function extractDateFromUserText(text: string, tz: string): string | undefined {
   if (/\btoday\b/.test(s)) return today;
 
   return undefined;
+}
+
+function extractTimeFromUserText(text: string): string | undefined {
+  const s = String(text || "").toLowerCase();
+  if (!s) return undefined;
+
+  const timeMatch =
+    s.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i) ||
+    s.match(/\b(\d{1,2}:\d{2})\b/);
+
+  if (!timeMatch) return undefined;
+
+  if (timeMatch.length >= 4) {
+    return parseTimeToHHMM(`${timeMatch[1]}${timeMatch[2] ? `:${timeMatch[2]}` : ""} ${timeMatch[3]}`);
+  }
+
+  if (timeMatch.length === 2) {
+    return parseTimeToHHMM(timeMatch[1]);
+  }
+
+  return undefined;
+}
+
+function extractTimeRangeFromUserText(text: string): { time?: string; endTime?: string } {
+  const s = String(text || "").toLowerCase();
+  if (!s) return {};
+
+  // "from 10:00 am to 11:00 am", "10am-11am", "10:00 to 11:00"
+  const range =
+    s.match(
+      /\b(?:from\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*(?:to|\-|\–)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i
+    ) ||
+    s.match(/\b(?:from\s+)?(\d{1,2}:\d{2})\s*(?:to|\-|\–)\s*(\d{1,2}:\d{2})\b/i);
+
+  if (range) {
+    if (range.length >= 7) {
+      const start = parseTimeToHHMM(`${range[1]}${range[2] ? `:${range[2]}` : ""} ${range[3]}`);
+      const end = parseTimeToHHMM(`${range[4]}${range[5] ? `:${range[5]}` : ""} ${range[6]}`);
+      return { time: start, endTime: end };
+    }
+    if (range.length === 3) {
+      const start = parseTimeToHHMM(range[1]);
+      const end = parseTimeToHHMM(range[2]);
+      return { time: start, endTime: end };
+    }
+  }
+
+  const single = extractTimeFromUserText(s);
+  return single ? { time: single } : {};
 }
 
 /**
@@ -856,6 +1036,10 @@ export async function POST(req: NextRequest) {
     const rawMessages = Array.isArray(body?.messages) ? body.messages : [];
     const context = body?.context ?? {};
     const tz: string = context?.timezone || "Asia/Kolkata";
+    const pendingEventDraft: PendingEventDraft | null =
+      context?.pendingEventDraft && typeof context.pendingEventDraft === "object"
+        ? (context.pendingEventDraft as PendingEventDraft)
+        : null;
 
     const recentEntities: RecentEntities =
       context?.recentEntities && typeof context.recentEntities === "object" ? context.recentEntities : {};
@@ -882,11 +1066,85 @@ export async function POST(req: NextRequest) {
     const lastUserTextRaw = (lastUserMsg?.content || "").toString();
     const lastUserText = normalizeUserTextForLLM(lastUserTextRaw);
 
+    // Fast-path: resolve a previously suggested conflict slot from follow-up user reply.
+    if (pendingEventDraft?.kind === "event_conflict_resolution") {
+      const selection = resolveSlotSelectionFromReply(lastUserText, pendingEventDraft);
+      if (selection.cancel) {
+        return NextResponse.json({
+          assistantText: "Okay, I won't schedule that meeting for now.",
+          toolCalls: [{ id: `${rid}:view`, name: "set_active_view", arguments: { view: "calendar" } }],
+          requestId: rid,
+          pendingEventDraft: null,
+        } satisfies ChatApiResponse);
+      }
+
+      if (selection.slot) {
+        const baseArgs: Record<string, any> = {
+          ...pendingEventDraft.pendingTool.arguments,
+          date: pendingEventDraft.date,
+          time: selection.slot.start_time,
+          endTime: selection.slot.end_time,
+        };
+        const patchedTool: ToolCall =
+          pendingEventDraft.pendingTool.name === "create_event"
+            ? {
+                id: pendingEventDraft.pendingTool.id,
+                name: "create_event",
+                arguments: {
+                  title: String(baseArgs.title || "New event"),
+                  description: baseArgs.description,
+                  date: String(baseArgs.date),
+                  time: baseArgs.time,
+                  endTime: baseArgs.endTime,
+                  location: baseArgs.location,
+                  category: baseArgs.category,
+                  priority: baseArgs.priority,
+                },
+              }
+            : {
+                id: pendingEventDraft.pendingTool.id,
+                name: "update_event_by_title",
+                arguments: {
+                  titleQuery: String(baseArgs.titleQuery || baseArgs.title || "event"),
+                  title: baseArgs.title,
+                  description: baseArgs.description,
+                  date: String(baseArgs.date),
+                  time: baseArgs.time,
+                  endTime: baseArgs.endTime,
+                  location: baseArgs.location,
+                  category: baseArgs.category,
+                  priority: baseArgs.priority,
+                  isCompleted: baseArgs.isCompleted,
+                },
+              };
+
+        return NextResponse.json({
+          assistantText: `Perfect — scheduling it at ${selection.slot.start_time} on ${pendingEventDraft.date}.`,
+          toolCalls: [
+            { id: `${rid}:view`, name: "set_active_view", arguments: { view: "calendar" } },
+            { ...patchedTool, id: `${rid}:slot_apply` },
+          ],
+          requestId: rid,
+          pendingEventDraft: null,
+        } satisfies ChatApiResponse);
+      }
+    }
+
     if (!lastUserText.trim()) {
       return NextResponse.json(
         { assistantText: "Send a message to start.", toolCalls: [], requestId: rid } satisfies ChatApiResponse,
         { status: 400 }
       );
+    }
+
+    const reminderInstruction = extractReminderPreferenceInstruction(lastUserTextRaw);
+    if (userIdFromBody && reminderInstruction) {
+      appendReminderPreference({
+        userId: userIdFromBody,
+        instruction: reminderInstruction,
+      }).catch((error) => {
+        console.error("Failed to update reminder preferences:", error);
+      });
     }
 
     // Get Gemini API key from environment (Supabase table may not exist yet)
@@ -1225,24 +1483,51 @@ Keep responses concise (1-2 sentences usually).`;
         .trim();
     };
 
-    // Aggressive deduplication: filter by normalized title + kind + dueDate
+    const normalizeDateForKey = (value?: string | null): string => {
+      const raw = String(value || "").trim().toLowerCase();
+      if (!raw) return "";
+      if (raw === "today") return getYmdInTimeZone(tz);
+      if (raw === "tomorrow") return addDaysYmd(getYmdInTimeZone(tz), 1);
+      const match = raw.match(/\d{4}-\d{2}-\d{2}/);
+      return match?.[0] || raw;
+    };
+
+    const normalizeTimeForKey = (value?: string | null): string => {
+      if (!value) return "";
+      return parseTimeToHHMM(value) || String(value).trim().toLowerCase();
+    };
+
+    const makeTaskSignature = (title: string, dueDate?: string | null, dueTime?: string | null): string =>
+      `${normalizeTitle(title)}|${normalizeDateForKey(dueDate)}|${normalizeTimeForKey(dueTime)}`;
+
+    const makeEventSignature = (title: string, date?: string | null, time?: string | null): string =>
+      `${normalizeTitle(title)}|${normalizeDateForKey(date)}|${normalizeTimeForKey(time)}`;
+
+    // Aggressive deduplication: filter by normalized title + kind + dueDate + dueTime
     const seenItems = new Set<string>();
     const originalItemCount = plan.items.length;
     
     plan.items = plan.items.filter((item: any) => {
       if (!item || !item.title || !item.kind) return true; // Keep items without required fields
       
-      const normalizedTitle = normalizeTitle(item.title);
       const itemKind = item.kind;
-      const dueDate = item.dueDate || item.date || '';
-      const itemKey = `${itemKind}:${normalizedTitle}:${dueDate}`;
+      const dueDate = item.dueDate || item.date || "";
+      const dueTime = item.dueTime || item.time || "";
+      const itemSignature =
+        itemKind === "task"
+          ? makeTaskSignature(item.title, dueDate, dueTime)
+          : itemKind === "event"
+          ? makeEventSignature(item.title, dueDate, dueTime)
+          : normalizeTitle(item.title);
+      const itemKey = `${itemKind}:${itemSignature}`;
       
       if (seenItems.has(itemKey)) {
         console.log("[/api/chat] FILTERED DUPLICATE:", { 
           kind: itemKind, 
           title: item.title,
-          normalized: normalizedTitle,
+          signature: itemSignature,
           dueDate,
+          dueTime,
           itemKey 
         });
         return false;
@@ -1259,10 +1544,10 @@ Keep responses concise (1-2 sentences usually).`;
     });
 
     // Extract all previously created items from database (not messages)
-    const extractPreviouslyCreatedItems = async (userId: string): Promise<{ taskTitles: Set<string>; goalTitles: Set<string>; eventTitles: Set<string> }> => {
-      const taskTitles = new Set<string>();
+    const extractPreviouslyCreatedItems = async (userId: string): Promise<{ taskSignatures: Set<string>; goalTitles: Set<string>; eventSignatures: Set<string> }> => {
+      const taskSignatures = new Set<string>();
       const goalTitles = new Set<string>();
-      const eventTitles = new Set<string>();
+      const eventSignatures = new Set<string>();
 
       try {
         const admin = getSupabaseAdminClient();
@@ -1271,13 +1556,15 @@ Keep responses concise (1-2 sentences usually).`;
         // Query recently created tasks (last hour)
         const { data: tasks, error: tasksError } = await admin
           .from('tasks')
-          .select('title')
+          .select('title,due_date,due_time')
           .eq('user_id', userId)
           .gt('created_at', oneHourAgo);
 
         if (!tasksError && tasks) {
           tasks.forEach((task: any) => {
-            if (task.title) taskTitles.add(normalizeTitle(task.title));
+            if (task.title) {
+              taskSignatures.add(makeTaskSignature(task.title, task.due_date, task.due_time));
+            }
           });
         }
 
@@ -1297,38 +1584,40 @@ Keep responses concise (1-2 sentences usually).`;
         // Query recently created events (last hour)
         const { data: events, error: eventsError } = await admin
           .from('calendar_events')
-          .select('title')
+          .select('title,event_date,start_time')
           .eq('user_id', userId)
           .gt('created_at', oneHourAgo);
 
         if (!eventsError && events) {
           events.forEach((event: any) => {
-            if (event.title) eventTitles.add(normalizeTitle(event.title));
+            if (event.title) {
+              eventSignatures.add(makeEventSignature(event.title, event.event_date, event.start_time));
+            }
           });
         }
 
         console.log("[/api/chat] Previously created items from database:", {
-          taskCount: taskTitles.size,
+          taskCount: taskSignatures.size,
           goalCount: goalTitles.size,
-          eventCount: eventTitles.size,
-          tasks: Array.from(taskTitles),
+          eventCount: eventSignatures.size,
+          tasks: Array.from(taskSignatures),
           goals: Array.from(goalTitles),
-          events: Array.from(eventTitles)
+          events: Array.from(eventSignatures)
         });
       } catch (err) {
         console.error("[/api/chat] Error extracting previously created items:", err);
       }
 
-      return { taskTitles, goalTitles, eventTitles };
+      return { taskSignatures, goalTitles, eventSignatures };
     };
 
-    const { taskTitles: prevTaskTitles, goalTitles: prevGoalTitles, eventTitles: prevEventTitles } = await extractPreviouslyCreatedItems(userIdFromBody);
+    const { taskSignatures: prevTaskSignatures, goalTitles: prevGoalTitles, eventSignatures: prevEventSignatures } = await extractPreviouslyCreatedItems(userIdFromBody);
 
     const clientToolCalls: ToolCall[] = [];
     const serverToolCalls: Array<{ name: ToolCall["name"]; arguments: any }> = [];
-    const processedTaskTitles = new Set<string>([...prevTaskTitles]); // Track created tasks + previously created
+    const processedTaskSignatures = new Set<string>([...prevTaskSignatures]); // Track created tasks + previously created
     const processedGoalTitles = new Set<string>([...prevGoalTitles]); // Track created goals + previously created
-    const processedEventTitles = new Set<string>([...prevEventTitles]); // Track created events + previously created
+    const processedEventSignatures = new Set<string>([...prevEventSignatures]); // Track created events + previously created
 
     function pushClient(tc: ToolCall) {
       clientToolCalls.push(tc);
@@ -1367,27 +1656,38 @@ Keep responses concise (1-2 sentences usually).`;
       }
 
       if (item.kind === "task") {
-        // Deduplicate: use normalized title for comparison
-        const normalizedTitle = normalizeTitle(item.title || "");
-        if (processedTaskTitles.has(normalizedTitle)) {
+        const resolvedDueDate =
+          resolveDateToken((item as any).dueDate, tz) ||
+          extractDateFromUserText(lastUserText, tz) ||
+          undefined;
+        const resolvedDueTime =
+          normalizeHHMM((item as any).dueTime || (item as any).time) ||
+          extractTimeFromUserText(lastUserText) ||
+          undefined;
+        const taskSignature = makeTaskSignature(item.title || "", resolvedDueDate, resolvedDueTime);
+
+        if (processedTaskSignatures.has(taskSignature)) {
           console.log("[/api/chat] SKIPPING PROCESSED TASK:", { 
             title: item.title, 
-            normalized: normalizedTitle 
+            taskSignature,
+            dueDate: resolvedDueDate,
+            dueTime: resolvedDueTime,
           });
           continue;
         }
-        processedTaskTitles.add(normalizedTitle);
+        processedTaskSignatures.add(taskSignature);
 
         const listName = (item.listName && item.listName.trim()) || inferListNameHeuristic(item.title, item.notes);
 
-        console.log("[/api/chat] Creating task:", { title: item.title, normalized: normalizedTitle });
+        console.log("[/api/chat] Creating task:", { title: item.title, taskSignature });
+
         pushClient({
           name: "create_task",
           arguments: {
             title: item.title,
             notes: item.notes,
-            dueDate: item.dueDate,
-            dueTime: item.dueTime,
+            dueDate: resolvedDueDate,
+            dueTime: resolvedDueTime,
             priority: item.priority,
             estimatedHours: item.estimatedHours,
             location: item.location,
@@ -1411,9 +1711,17 @@ Keep responses concise (1-2 sentences usually).`;
         }
 
         // --- Time resolution ---
-        // Prefer planner time; if missing AND this is a date-only follow-up, carry forward from history
-        const rawStart = (item as any).time || (isDateOnlyReply(lastUserText) ? carry.time : undefined);
-        const rawEnd = (item as any).endTime || (isDateOnlyReply(lastUserText) ? carry.endTime : undefined);
+        // Prefer planner output; then parse explicit range/time from latest user text;
+        // finally use carry-forward time for date-only follow-ups.
+        const parsedRange = extractTimeRangeFromUserText(lastUserText);
+        const rawStart =
+          (item as any).time ||
+          parsedRange.time ||
+          (isDateOnlyReply(lastUserText) ? carry.time : undefined);
+        const rawEnd =
+          (item as any).endTime ||
+          parsedRange.endTime ||
+          (isDateOnlyReply(lastUserText) ? carry.endTime : undefined);
 
         const start = normalizeHHMM(rawStart);
         const end = normalizeHHMM(rawEnd);
@@ -1423,18 +1731,17 @@ Keep responses concise (1-2 sentences usually).`;
         (item as any).endTime = end;
 
         // Deduplicate: use normalized title + date + time for comparison
-        const normalizedTitle = normalizeTitle(item.title || "");
-        const eventKey = `${normalizedTitle}:${resolvedDate}:${start}`;
-        if (processedEventTitles.has(eventKey)) {
+        const eventSignature = makeEventSignature(item.title || "", resolvedDate, start);
+        if (processedEventSignatures.has(eventSignature)) {
           console.log("[/api/chat] SKIPPING PROCESSED EVENT:", { 
             title: item.title, 
-            normalized: normalizedTitle,
+            eventSignature,
             date: resolvedDate,
             time: start
           });
           continue;
         }
-        processedEventTitles.add(eventKey);
+        processedEventSignatures.add(eventSignature);
 
         if (resolvedDate && start) {
           pushServer("detect_event_conflicts", {
@@ -1442,7 +1749,7 @@ Keep responses concise (1-2 sentences usually).`;
           });
         }
 
-        console.log("[/api/chat] Creating event:", { title: item.title, normalized: normalizedTitle, date: resolvedDate, time: start });
+        console.log("[/api/chat] Creating event:", { title: item.title, eventSignature, date: resolvedDate, time: start });
         pushClient({
           name: "create_event",
           arguments: {
@@ -1489,8 +1796,9 @@ Keep responses concise (1-2 sentences usually).`;
           resolveDateToken((item as any).date, tz) ||
           (/^\d{4}-\d{2}-\d{2}$/.test(String((item as any).date || "")) ? String((item as any).date) : undefined);
 
-        const start = normalizeHHMM(item.time);
-        const end = normalizeHHMM(item.endTime);
+        const parsedRange = extractTimeRangeFromUserText(lastUserText);
+        const start = normalizeHHMM(item.time || parsedRange.time);
+        const end = normalizeHHMM(item.endTime || parsedRange.endTime);
 
         (item as any).date = resolvedDate;
 
@@ -1796,6 +2104,16 @@ Keep responses concise (1-2 sentences usually).`;
         limit: 5,
       });
 
+      const eventActionTool = clientToolCalls.find(
+        (tc) => tc.name === "create_event" || tc.name === "update_event_by_title"
+      ) as
+        | {
+            id?: string;
+            name: "create_event" | "update_event_by_title";
+            arguments: Record<string, any>;
+          }
+        | undefined;
+
       const filteredClient = clientToolCalls.filter(
         (tc) => tc.name !== "create_event" && tc.name !== "update_event_by_title"
       );
@@ -1807,16 +2125,52 @@ Keep responses concise (1-2 sentences usually).`;
 
       const slotLines = slots.map((s) => `• ${s.start_time}–${s.end_time} (${s.reason})`).join("\n");
 
+      const slotChoices = slots.map((s, idx) => ({
+        key: `slot_${idx + 1}`,
+        title: `${s.start_time}–${s.end_time}`,
+        subtitle: s.reason,
+        payload: { date, time: s.start_time, endTime: s.end_time, durationMinutes: dur },
+      }));
+
       const toolCallsWithIds: ToolCall[] = [
         { id: `${rid}:view`, name: "set_active_view", arguments: { view: "calendar" } },
         ...filteredClient.map((tc, idx) => ({ ...tc, id: tc.id || `${rid}:c_${idx}` })),
       ];
+      if (eventActionTool && slotChoices.length > 0) {
+        toolCallsWithIds.push({
+          id: `${rid}:slot_pick`,
+          name: "request_disambiguation",
+          arguments: {
+            prompt: `Pick a slot to schedule "${eventActionTool.arguments.title || "this event"}":`,
+            kind: "slot",
+            choices: slotChoices,
+            pendingTool: eventActionTool as unknown as ToolCall,
+          },
+        });
+      }
 
       return NextResponse.json({
         assistantText:
           `That time conflicts with your calendar on ${date} (${startTime}${endTime ? `–${endTime}` : ""}).\n\nConflicts:\n${conflictLines}\n\nSuggested open slots (${dur} min):\n${slotLines}\n\nReply with one of the suggested times (e.g., “move it to ${slots[0]?.start_time}”).`,
         toolCalls: toolCallsWithIds,
         requestId: rid,
+        pendingEventDraft:
+          eventActionTool && slots.length
+            ? {
+                kind: "event_conflict_resolution",
+                date,
+                requestedStartTime: startTime,
+                requestedEndTime: endTime,
+                durationMinutes: dur,
+                pendingTool: eventActionTool,
+                slots: slots.map((s) => ({
+                  start_time: s.start_time,
+                  end_time: s.end_time,
+                  reason: s.reason,
+                })),
+                createdAt: new Date().toISOString(),
+              }
+            : null,
       } satisfies ChatApiResponse);
     }
 
@@ -1891,7 +2245,6 @@ Keep responses concise (1-2 sentences usually).`;
     }));
 
     // Server-side execution for non-interactive clients (e.g., Voice, iMessage)
-    const executeServerIntents = Boolean(body?.executeServerIntents);
     const serverActionsPerformed: string[] = [];
 
     if (executeServerIntents) {
@@ -1962,6 +2315,7 @@ Keep responses concise (1-2 sentences usually).`;
       requestId: rid,
       silentMode: isSilentOperation,
       successMessage: isSilentOperation ? successMessage : undefined,
+      pendingEventDraft: null,
     } satisfies ChatApiResponse);
   } catch (e: any) {
     console.error("api/chat error:", e);

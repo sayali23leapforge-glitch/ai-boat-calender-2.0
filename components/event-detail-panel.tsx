@@ -1,6 +1,6 @@
 "use client"
 
-import { X, MapPin, Clock, Tag, AlertCircle, CheckCircle2, Trash2, Edit } from "lucide-react"
+import { X, MapPin, Clock, Tag, AlertCircle, CheckCircle2, Trash2, Edit, BellRing } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { type CalendarEvent } from "@/lib/calendar-events"
 import { getCategoryIcon, formatTimeRange, pastelCategoryColors } from "@/lib/event-helpers"
@@ -27,6 +27,12 @@ export function EventDetailPanel({
 
   const CategoryIcon = getCategoryIcon(event.category as any)
   const categoryColor = pastelCategoryColors[event.category as keyof typeof pastelCategoryColors]
+  const reminderSchedule = [...(event.reminder_schedule ?? [])].sort(
+    (a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime()
+  )
+  const hasEventTime = Boolean(event.event_date)
+  const startTime = event.start_time?.substring(0, 5)
+  const endTime = event.end_time?.substring(0, 5)
 
   return (
     <>
@@ -74,14 +80,13 @@ export function EventDetailPanel({
                   <div className="text-sm font-semibold text-gray-900">
                     {format(new Date(event.event_date), "EEEE, MMMM d, yyyy")}
                   </div>
-                  {event.start_time && event.end_time && (
-                    <div className="text-sm text-gray-700 mt-1.5 font-mono font-medium">
-                      {formatTimeRange(
-                        event.start_time.substring(0, 5),
-                        event.end_time.substring(0, 5)
-                      )}
-                    </div>
-                  )}
+                  <div className="text-sm text-gray-700 mt-1.5 font-mono font-medium">
+                    {startTime && endTime
+                      ? formatTimeRange(startTime, endTime)
+                      : startTime
+                      ? formatTimeRange(startTime, startTime)
+                      : "Time not set"}
+                  </div>
                 </div>
               </div>
 
@@ -127,6 +132,60 @@ export function EventDetailPanel({
                 <div>Source: {event.source}</div>
                 <div>Created: {format(new Date(event.created_at), "MMM d, yyyy 'at' h:mm a")}</div>
               </div>
+            </div>
+
+            <div className="space-y-3 rounded-lg border border-white/30 p-3 bg-white/30">
+              <div className="flex items-center gap-2">
+                <BellRing className="h-4 w-4 text-blue-500" />
+                <p className="text-sm font-medium text-gray-900">Email alert schedule</p>
+              </div>
+              {reminderSchedule.length === 0 ? (
+                <p className="text-xs text-gray-600">
+                  {hasEventTime
+                    ? "No email alerts are currently queued for this meeting."
+                    : "Set event date/time to generate scheduled email alerts."}
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {reminderSchedule.map((reminder, index) => {
+                    const scheduledDate = new Date(reminder.scheduled_at)
+                    const isValid = !Number.isNaN(scheduledDate.getTime())
+                    const status = reminder.status
+                    const statusClass =
+                      status === "SENT"
+                        ? "bg-emerald-500/10 text-emerald-700"
+                        : status === "FAILED"
+                        ? "bg-red-500/10 text-red-700"
+                        : "bg-blue-500/10 text-blue-700"
+                    const isRelatedQuestion = reminder.alert_kind === "RELATED_QUESTION"
+
+                    return (
+                      <div key={`${reminder.scheduled_at}-${index}`} className="flex items-start gap-3">
+                        <div className="mt-1 h-2.5 w-2.5 rounded-full bg-blue-500/80" />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${statusClass}`}>
+                              {status}
+                            </span>
+                            {isRelatedQuestion ? (
+                              <span className="text-[11px] text-amber-700 bg-amber-500/10 px-2 py-0.5 rounded-full font-medium">
+                                Related question
+                              </span>
+                            ) : reminder.offset_minutes ? (
+                              <span className="text-[11px] text-gray-600">
+                                {Math.round(reminder.offset_minutes / 60)}h before meeting
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="text-sm text-gray-900">
+                            {isValid ? format(scheduledDate, "EEE, MMM d • p") : "Unknown scheduled time"}
+                          </p>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           </div>
 

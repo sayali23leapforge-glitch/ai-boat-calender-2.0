@@ -3,6 +3,16 @@ import { createCalendarEvent, deleteCalendarEvent, updateCalendarEvent } from '.
 
 export type TaskPriority = 'critical' | 'high' | 'medium' | 'low'
 
+export type TaskReminderStatus = 'PENDING' | 'PROCESSING' | 'SENT' | 'FAILED'
+
+export type TaskReminderScheduleItem = {
+  scheduled_at: string
+  status: TaskReminderStatus
+  sent_at?: string | null
+  importance_level?: number | null
+  offset_minutes?: number | null
+}
+
 export type Task = {
   id: string
   user_id: string
@@ -20,6 +30,7 @@ export type Task = {
   goal: string | null
   location: string | null
   metadata: Record<string, unknown> | null
+  reminder_schedule?: TaskReminderScheduleItem[]
   created_at: string
   updated_at: string
 }
@@ -77,11 +88,24 @@ export async function createTask(
     location?: string
     metadata?: Record<string, unknown>
     syncToCalendar?: boolean
+    clientTimezone?: string
   }
 ): Promise<Task> {
+  const detectedClientTimezone =
+    options?.clientTimezone ||
+    (typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : undefined)
+
   const out = await api<{ data: Task }>(`/api/tasks/create`, {
     method: 'POST',
-    body: JSON.stringify({ userId, listId, title, options }),
+    body: JSON.stringify({
+      userId,
+      listId,
+      title,
+      options: {
+        ...options,
+        clientTimezone: detectedClientTimezone,
+      },
+    }),
   })
 
   const data = out.data
@@ -236,11 +260,20 @@ export async function toggleTaskStarred(taskId: string, isStarred: boolean): Pro
   return updateTask(taskId, { is_starred: isStarred })
 }
 
+export function normalizeDueDateForInput(dueDate: string | null | undefined): string {
+  if (!dueDate) return ""
+  const raw = String(dueDate).trim()
+  const match = raw.match(/\d{4}-\d{2}-\d{2}/)
+  return match?.[0] || ""
+}
+
 export function formatDueDate(dueDate: string | null, dueTime?: string | null): string | null {
   if (!dueDate) return null
 
   try {
-    const isoString = dueTime ? `${dueDate}T${normalizeTime(dueTime)}` : dueDate
+    const normalizedDate = normalizeDueDateForInput(dueDate)
+    if (!normalizedDate) return null
+    const isoString = dueTime ? `${normalizedDate}T${normalizeTime(dueTime)}` : normalizedDate
     const date = parseISO(isoString)
     const now = new Date()
     const sameDay = now.toDateString() === date.toDateString()
@@ -262,7 +295,9 @@ export function isTaskOverdue(dueDate: string | null, dueTime?: string | null): 
   if (!dueDate) return false
 
   try {
-    const isoString = dueTime ? `${dueDate}T${normalizeTime(dueTime)}` : dueDate
+    const normalizedDate = normalizeDueDateForInput(dueDate)
+    if (!normalizedDate) return false
+    const isoString = dueTime ? `${normalizedDate}T${normalizeTime(dueTime)}` : normalizedDate
     const date = parseISO(isoString)
     return isPast(date) && new Date().toDateString() !== date.toDateString()
   } catch {
