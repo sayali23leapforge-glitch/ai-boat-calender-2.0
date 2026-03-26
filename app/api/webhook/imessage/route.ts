@@ -157,11 +157,17 @@ STEP 1: IDENTIFY THE CORE ACTION (ignore all filler/uncertainty)
 Extract what the user ACTUALLY wants to do/achieve, ignoring all the extra words.
 
 STEP 2: IDENTIFY THE TYPE
-- TASK: Something they need to complete/action ("do X", "complete X", "remind me to X")
-  * Examples: "buy a car or something" → TASK "buy a car"
-  * "maybe i should call mom or whatever" → TASK "call mom"
-  * "fixx bugs tmmorow or like whenever" → TASK "fix bugs"
-  * "tmmorow buy milk or something" → TASK "buy milk" + DATE "2026-02-19"
+- - TASK: Something with CLEAR actionable intent — an explicit request to do, complete, or track something.
+  * MUST have a clear action verb + subject that the user is explicitly requesting to track.
+  * Valid examples:
+    - "remind me to buy a car" → TASK "buy a car"
+    - "add task: call mom tomorrow" → TASK "call mom" + DATE tomorrow
+    - "don't forget to fix bugs tmmorow" → TASK "fix bugs" + DATE tomorrow
+    - "i need to buy milk tmmorow" → TASK "buy milk" + DATE tomorrow
+  * NOT tasks (use IGNORE instead):
+    - "buy a car or something" → IGNORE (too vague, no explicit tracking request)
+    - "maybe i should call mom or whatever" → IGNORE (uncertain thought, not a request)
+    - "i was thinking about fixing the bugs" → IGNORE (reflection, not a task request)
 
 - GOAL: Something they want to learn/achieve/become ("learn X", "get X", "become X")
   * Examples: "i wanna maybe learn coding or something" → GOAL "learn coding"
@@ -173,8 +179,13 @@ STEP 2: IDENTIFY THE TYPE
   * "doctr appt like next week or whenever" → EVENT "doctor appointment", date "2026-02-25"
   * "lunch with sara tomorrow at 6 or something" → EVENT "lunch with sara", date "2026-02-19"
 
-- IGNORE: Just chat/question/greeting with NO actionable intent
-  * "hello", "how are you", "what's up", "how's it going", "just saying hi"
+- IGNORE: Chat, greetings, pleasantries, acknowledgments, or questions with NO actionable intent
+  * Greetings: "hello", "hi", "hey", "good morning", "good night", "what's up", "how's it going", "just saying hi"
+  * Pleasantries: "thanks", "thank you", "ok", "okay", "sure", "yep", "got it", "sounds good", "no problem", "you're welcome"
+  * Vague acknowledgments: "noted", "i see", "interesting", "makes sense"
+  * Pure questions asking for information (not requesting something to be tracked)
+  * Short filler messages with no clear action (1-2 words with no task/event/goal implied)
+  * Uncertain thoughts without an explicit tracking request: "i should probably call mom sometime" → IGNORE
 
 STEP 3: EXTRACT THE CLEAN TITLE
 - Remove all filler words, typos, grammar errors
