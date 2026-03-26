@@ -2245,7 +2245,6 @@ Keep responses concise (1-2 sentences usually).`;
     }));
 
     // Server-side execution for non-interactive clients (e.g., Voice, iMessage)
-    const executeServerIntents = Boolean(body?.executeServerIntents);
     const serverActionsPerformed: string[] = [];
 
     if (executeServerIntents) {
