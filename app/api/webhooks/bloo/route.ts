@@ -720,9 +720,19 @@ export async function POST(req: NextRequest) {
       // DB failed - send error
       await sendBloo(replyTo, `❌ Error: ${dbError.slice(0, 60)}. Please try again.`, blooNumber);
     } else {
-      // Conversational response - no DB involved
-      const fallbackReply = "Hey there! 👋 I'm Cal, your calendar assistant! 📱\n\n😊 I'm doing great, thanks for asking!\n\nWhat would you like to create today?\n\n📝 **TASK** - \"Buy groceries\" or \"Call mom\"\n📅 **EVENT** - \"Meeting tomorrow at 2pm\" or \"Dinner Friday 7pm\"\n🎯 **GOAL** - \"Learn guitar daily\" or \"Exercise 3x week\"\n\nOr just chat with me! 💬";
-      await sendBloo(replyTo, fallbackReply, blooNumber);
+      // Conversational response - no DB involved (greetings, questions, etc.)
+      const isGreeting = /\b(hello|hi|hey|how are you|what's up|sup)\b/i.test(text);
+      let response = "";
+      
+      if (isGreeting) {
+        // Quick greeting response
+        response = "👋 Hey there! I'm Cal, your calendar assistant! 📱\n\nWhat can I help you with today? You can create:\n• 📝 Tasks - \"Buy milk\"\n• 📅 Events - \"Meeting tomorrow 2pm\"\n• 🎯 Goals - \"Exercise daily\"";
+      } else {
+        // Generic fallback for other questions
+        response = "Hey there! 👋 I'm Cal, your calendar assistant! 📱\n\n😊 That's a great question!\n\nWhat would you like to create today?\n\n📝 **TASK** - \"Buy groceries\" or \"Call mom\"\n📅 **EVENT** - \"Meeting tomorrow at 2pm\" or \"Dinner Friday 7pm\"\n🎯 **GOAL** - \"Learn guitar daily\" or \"Exercise 3x week\"\n\nOr just chat with me! 💬";
+      }
+      
+      await sendBloo(replyTo, response, blooNumber);
     }
 
     // 9. BACKGROUND: Refine with Gemini if needed (doesn't block response)
