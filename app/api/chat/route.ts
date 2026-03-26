@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
+import { serverCreateTask, serverCreateEvent, serverCreateGoal } from "@/lib/server-actions";
 
 type AllowedView =
   | "tasks"
@@ -843,6 +844,8 @@ function groupEventsByDate(events: DbEvent[]) {
 export async function POST(req: NextRequest) {
   const startedAt = Date.now();
   const requestId = makeRequestId();
+
+  console.log(`[POST /api/chat] Incoming request - ID: ${requestId}`);
 
   try {
     const body = await req.json();
@@ -1887,6 +1890,41 @@ Keep responses concise (1-2 sentences usually).`;
       id: tc.id || `${rid}:t_${idx}`,
     }));
 
+    // Server-side execution for non-interactive clients (e.g., Voice, iMessage)
+    const executeServerIntents = Boolean(body?.executeServerIntents);
+    const serverActionsPerformed: string[] = [];
+
+    if (executeServerIntents) {
+      if (!uid) {
+        console.error("[/api/chat] Server intents requested but no uid found");
+        serverActionsPerformed.push("❌ Action failed: User not identified. Please sign in again.");
+      } else {
+        console.log("[/api/chat] Executing server intents for:", uid, "Tool count:", toolCallsWithIds.length);
+        for (const tc of toolCallsWithIds) {
+          console.log("[/api/chat] Server execution attempt for:", tc.name);
+          try {
+            if (tc.name === "create_task") {
+              const res = await serverCreateTask(uid, tc.arguments as any);
+              console.log("[/api/chat] Server task created:", res.id);
+              serverActionsPerformed.push(`✓ Task created: ${res.title}`);
+            } else if (tc.name === "create_event") {
+              const res = await serverCreateEvent(uid, tc.arguments as any);
+              console.log("[/api/chat] Server event created:", res.id);
+              serverActionsPerformed.push(`✓ Event created: ${res.title}`);
+            } else if (tc.name === "create_goal") {
+              const res = await serverCreateGoal(uid, tc.arguments as any);
+              console.log("[/api/chat] Server goal created:", res.id);
+              serverActionsPerformed.push(`✓ Goal created: ${res.title}`);
+            }
+          } catch (err: any) {
+            console.error(`[/api/chat] Server execution error for ${tc.name}:`, err);
+            serverActionsPerformed.push(`❌ Failed to create ${tc.name.split('_')[1]}: ${err.message}`);
+          }
+        }
+        console.log("[/api/chat] Server actions summary:", serverActionsPerformed);
+      }
+    }
+
     console.log("[/api/chat] Sending response:", { 
       rid, 
       assistantText, 
@@ -1911,8 +1949,15 @@ Keep responses concise (1-2 sentences usually).`;
       else if (goalCount > 0) successMessage = `✓ ${goalCount === 1 ? 'Goal' : goalCount + ' goals'} added`;
     }
 
+    // Combine assistant text with server action summary if executed
+    let finalAssistantText = (isSilentOperation ? '' : assistantText).trim();
+    if (executeServerIntents && serverActionsPerformed.length > 0) {
+      const summary = serverActionsPerformed.join("\n");
+      finalAssistantText = finalAssistantText ? `${summary}\n\n${finalAssistantText}` : summary;
+    }
+
     return NextResponse.json({
-      assistantText: isSilentOperation ? '' : assistantText,
+      assistantText: finalAssistantText,
       toolCalls: toolCallsWithIds,
       requestId: rid,
       silentMode: isSilentOperation,

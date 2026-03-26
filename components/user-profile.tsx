@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabase"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
-import { Mail, Phone, Calendar, CheckSquare, Target, Edit2, Save, X } from "lucide-react"
+import { Mail, Phone, Calendar, CheckSquare, Target, Edit2, Save, X, Mic, Copy, Check, Smartphone } from "lucide-react"
 
 interface UserStats {
   tasksCount: number
@@ -24,6 +24,7 @@ export function UserProfile() {
   const [newBlooNumber, setNewBlooNumber] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [stats, setStats] = useState<UserStats>({ tasksCount: 0, goalsCount: 0, eventsCount: 0 })
+  const [copiedUserId, setCopiedUserId] = useState(false)
 
   useEffect(() => {
     loadUserData()
@@ -240,6 +241,13 @@ export function UserProfile() {
     }
   }
 
+  const handleCopyUserId = () => {
+    if (!user?.id) return
+    navigator.clipboard.writeText(user.id)
+    setCopiedUserId(true)
+    setTimeout(() => setCopiedUserId(false), 2000)
+  }
+
   const handleCancelBloo = () => {
     setNewBlooNumber(blooNumber)
     setEditingBloo(false)
@@ -425,6 +433,79 @@ export function UserProfile() {
                   <span className="text-lg md:text-2xl font-bold">{stats.eventsCount}</span>
                 </div>
                 <p className="text-xs text-muted-foreground">Events Created</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Control Center Voice Sync */}
+          <div className="space-y-4 pt-4 border-t border-border/30">
+            <div className="flex items-center gap-2">
+              <Mic className="h-4 w-4 text-primary" />
+              <h3 className="text-sm font-semibold text-foreground">Control Center Voice Sync</h3>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Speak a task or event from your iPhone Control Center — it instantly appears in your calendar via AI.
+            </p>
+
+            {/* User ID copy */}
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Your User ID (needed for the Shortcut)</label>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 bg-muted/50 border border-border/30 rounded-lg px-3 py-2 font-mono text-xs text-foreground truncate">
+                  {user.id}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCopyUserId}
+                  className="shrink-0 gap-1.5"
+                >
+                  {copiedUserId ? (
+                    <><Check className="h-3.5 w-3.5 text-green-500" /> Copied</>
+                  ) : (
+                    <><Copy className="h-3.5 w-3.5" /> Copy</>
+                  )}
+                </Button>
+              </div>
+            </div>
+
+            {/* CTA button */}
+            <a
+              href="https://www.icloud.com/shortcuts/e0fbadb6f17e42a6876c0821edde3e75"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <Button className="w-full gap-2 bg-primary hover:bg-primary/90">
+                <Smartphone className="h-4 w-4" />
+                Add to Control Center
+              </Button>
+            </a>
+
+            {/* 3-step instructions */}
+            <div className="space-y-2 pt-1">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">How it works</p>
+              <div className="space-y-2">
+                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/20 text-primary text-xs font-bold shrink-0 mt-0.5">1</span>
+                  <div>
+                    <p className="text-sm font-medium">Download &amp; configure the Shortcut</p>
+                    <p className="text-xs text-muted-foreground">Tap "Add to Control Center" above, then paste your User ID when prompted.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/20 text-primary text-xs font-bold shrink-0 mt-0.5">2</span>
+                  <div>
+                    <p className="text-sm font-medium">Add to Control Center or Action Button</p>
+                    <p className="text-xs text-muted-foreground">Go to Settings → Control Center → add "Voice Quick Add". Or assign it to your iPhone's Action Button.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/20 text-primary text-xs font-bold shrink-0 mt-0.5">3</span>
+                  <div>
+                    <p className="text-sm font-medium">Tap, speak, done</p>
+                    <p className="text-xs text-muted-foreground">Tap the shortcut, speak your task or event, and it instantly appears in your calendar.</p>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
