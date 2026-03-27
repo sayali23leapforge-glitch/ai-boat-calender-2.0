@@ -518,6 +518,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const [iMessageConnected, setIMessageConnected] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const iMessageInitAttemptedRef = useRef(false);
 
   const [resolvedUserId, setResolvedUserId] = useState<string>(userId || "");
 
@@ -654,6 +655,10 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
   // Initialize iMessage integration (optional - app works without it)
   useEffect(() => {
+    // Prevent duplicate init in React StrictMode dev double-mount.
+    if (iMessageInitAttemptedRef.current) return;
+    iMessageInitAttemptedRef.current = true;
+
     // Check if BlueBubbles is configured
     const blueBubblesUrl = process.env.NEXT_PUBLIC_BLUEBUBBLES_BASE_URL;
     if (!blueBubblesUrl || blueBubblesUrl === '') {

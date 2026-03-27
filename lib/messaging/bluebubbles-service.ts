@@ -68,7 +68,22 @@ export class BlueBubblesMessageService implements IMessageService {
 
       // Wait for connection to establish
       return new Promise(async (resolve, reject) => {
+        let settled = false;
+        const cleanupAndReject = (message: string) => {
+          if (settled) return;
+          settled = true;
+          this.connected = false;
+          this.notifyConnectionStatusChange(false);
+          this.socket?.off('connect', connectHandler);
+          this.socket?.off('connect_error', errorHandler);
+          this.socket?.disconnect();
+          this.socket = null;
+          reject(new Error(message));
+        };
+
         const connectHandler = async () => {
+          if (settled) return;
+          settled = true;
           this.connected = true;
           this.reconnectAttempts = 0;
           this.notifyConnectionStatusChange(true);
@@ -88,13 +103,14 @@ export class BlueBubblesMessageService implements IMessageService {
           } catch (error) {
             console.warn('Could not fetch conversations immediately:', error instanceof Error ? error.message : 'Unknown error');
           }
-          
+
+          clearTimeout(timeout);
           resolve();
         };
 
         const errorHandler = (error: any) => {
           console.error('BlueBubbles connection error:', error);
-          reject(new Error(`Failed to connect to BlueBubbles server: ${error?.message || 'Unknown error'}`));
+          cleanupAndReject(`Failed to connect to BlueBubbles server: ${error?.message || 'Unknown error'}`);
         };
 
         this.socket.on('connect', connectHandler);
@@ -102,9 +118,7 @@ export class BlueBubblesMessageService implements IMessageService {
 
         // Timeout after 15 seconds
         const timeout = setTimeout(() => {
-          this.socket?.off('connect', connectHandler);
-          this.socket?.off('connect_error', errorHandler);
-          reject(new Error('Connection timeout - BlueBubbles server not responding'));
+          cleanupAndReject('Connection timeout - BlueBubbles server not responding');
         }, 15000);
       });
     } catch (error) {
