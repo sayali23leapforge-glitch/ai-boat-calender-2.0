@@ -168,6 +168,8 @@ type ChatApiResponse = {
   toolCalls: ToolCall[];
   requestId?: string;
   pendingEventDraft?: PendingEventDraft | null;
+  successMessage?: string;
+  silentMode?: boolean;
 };
 
 type PendingEventDraft = {
@@ -1998,7 +2000,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
                     />
                   </div>
                 </div>
-                <Button onClick={send} disabled={loading} className="rounded-xl">
+                <Button onClick={() => send()} disabled={loading} className="rounded-xl">
                   {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 </Button>
               </div>
