@@ -286,9 +286,60 @@ Return ONLY the JSON object, nothing else - no markdown, no extra text.`
 // ─── AI INTENT ────────────────────────────────────────────────────────────────
 type Intent = { type: "task" | "goal" | "event" | null; title: string; date: string | null; time: string | null };
 
+// Extract actionable intent from conversational messages
+async function extractActionableIntent(text: string): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return text;
+
+  try {
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    const result = await model.generateContent({
+      contents: [{
+        role: "user",
+        parts: [{
+          text: `Extract ONLY the actionable intent from this message. Strip conversational filler and narrative context.
+
+Message: "${text}"
+
+Rules:
+1. Extract the core action (verb + object) + any relevant context (dates, times, locations)
+2. Remove narrative filler ("I saw", "I just", "I'm so", "I think", "I noticed", etc.)
+3. Remove generic pleasantries
+4. Keep it concise (under 15 words typically)
+5. Return ONLY the cleaned text, nothing else
+
+Examples:
+- "I saw this guy wearing a luxury watch, I want to buy a watch" → "buy a watch"
+- "I'm so tired, I need to call mom" → "call mom"
+- "After I finish my meeting tomorrow, schedule a doctor appointment" → "schedule doctor appointment tomorrow"
+- "Hey, I just finished my project, update the spreadsheet" → "update spreadsheet"
+
+Cleaned intent:`
+        }]
+      }],
+      generationConfig: { maxOutputTokens: 100, temperature: 0.1 },
+    });
+
+    const cleaned = result.response.text().trim();
+    console.log("[Webhook] 🧹 Cleaned intent:", cleaned);
+    return cleaned.length > 5 ? cleaned : text;  // Fallback to original if extraction failed
+  } catch (e: any) {
+    console.log("[Webhook] Intent extraction failed:", e?.message);
+    return text;
+  }
+}
+
 async function analyzeIntent(text: string): Promise<Intent> {
   const { today, tomorrow } = getTodayTomorrow();
   const apiKey = process.env.GEMINI_API_KEY;
+  
+  // First, extract actionable intent (strip filler)
+  let cleanedText = text;
+  if (apiKey && text.length > 30) {  // Only clean longer messages that might have narrative
+    cleanedText = await extractActionableIntent(text);
+  }
+  
   if (apiKey) {
     try {
       const genAI = new GoogleGenerativeAI(apiKey);
@@ -297,7 +348,7 @@ async function analyzeIntent(text: string): Promise<Intent> {
         contents: [{
           role: "user",
           parts: [{
-            text: `Classify this message. Return ONLY valid JSON, no markdown, no extra text.\n\nMessage: "${text}"\n\nJSON format:\n{"type":"task","title":"concise title","date":null,"time":null}\n\ntype values:\n- "task" = action to do (buy anything, call someone, fix something, any todo)\n- "goal" = habit or learning (learn piano, exercise daily, lose weight)\n- "event" = specific date/time meeting (meeting tomorrow 3pm, dentist Friday)\n- null = pure conversation/question (hi, how are you, what time is it)\n\nToday=${today}, Tomorrow=${tomorrow}`
+            text: `Classify this message. Return ONLY valid JSON, no markdown, no extra text.\n\nMessage: "${cleanedText}"\n\nJSON format:\n{"type":"task","title":"concise title","date":null,"time":null}\n\ntype values:\n- "task" = action to do (buy anything, call someone, fix something, any todo)\n- "goal" = habit or learning (learn piano, exercise daily, lose weight)\n- "event" = specific date/time meeting (meeting tomorrow 3pm, dentist Friday)\n- null = pure conversation/question (hi, how are you, what time is it)\n\nToday=${today}, Tomorrow=${tomorrow}`
           }]
         }],
         generationConfig: { maxOutputTokens: 500, temperature: 0.1 },
@@ -307,7 +358,7 @@ async function analyzeIntent(text: string): Promise<Intent> {
       const parsed = JSON.parse(raw);
       return {
         type: parsed.type ?? null,
-        title: String(parsed.title ?? text).trim(),
+        title: String(parsed.title ?? cleanedText).trim(),
         date: parsed.date ?? null,
         time: parsed.time ?? null,
       };
@@ -315,7 +366,7 @@ async function analyzeIntent(text: string): Promise<Intent> {
       console.log("[Webhook] Gemini failed:", e?.message);
     }
   }
-  return fallbackIntent(text);
+  return fallbackIntent(cleanedText);
 }
 
 function fallbackIntent(text: string): Intent {
