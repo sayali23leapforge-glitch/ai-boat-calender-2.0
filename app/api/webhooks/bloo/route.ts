@@ -318,7 +318,7 @@ function isConversational(text: string): boolean {
   return false;
 }
 
-// Extract actionable intent from conversational messages
+// Extract actionable intent from ANY message - strip ALL narrative filler
 async function extractActionableIntent(text: string): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -336,22 +336,26 @@ async function extractActionableIntent(text: string): Promise<string> {
       contents: [{
         role: "user",
         parts: [{
-          text: `Extract ONLY the actionable intent from this message. Strip conversational filler and narrative context.
+          text: `EXTRACT ONLY ACTIONABLE INTENT from this message. Find what the user ACTUALLY WANTS TO DO.
 
 Message: "${text}"
 
 Rules:
-1. Extract the core action (verb + object) + any relevant context (dates, times, locations)
-2. Remove narrative filler ("I saw", "I just", "I'm so", "I think", "I noticed", etc.)
-3. Remove generic pleasantries
-4. Keep it concise (under 15 words typically)
-5. Return ONLY the cleaned text, nothing else
+1. Remove ALL narrative/story context ("I saw", "I was", "I think", "I'm feeling")
+2. Remove ALL small talk ("how are you", "thanks", "okay", questions for info)
+3. Remove ALL filler words and conversational phrases
+4. Extract ONLY concrete actions: tasks (do/buy/call/schedule), events (meetings/appointments), goals (habits/learning)
+5. Include relevant context: dates, times, locations, but ONLY if they're actionable
+6. If multiple actions exist, combine them into one concise statement
+7. Keep under 20 words
+8. Return ONLY the cleaned actionable text, NOTHING else
 
 Examples:
-- "I saw this guy wearing a luxury watch, I want to buy a watch" → "buy a watch"
-- "I'm so tired, I need to call mom" → "call mom"
-- "After I finish my meeting tomorrow, schedule a doctor appointment" → "schedule doctor appointment tomorrow"
-- "Hey, I just finished my project, update the spreadsheet" → "update spreadsheet"
+- "Hey! How are you? I was thinking, I need to buy milk and also call mom tomorrow" → "buy milk, call mom tomorrow"
+- "So I saw this guy wearing a watch and honestly I want to buy a watch too" → "buy a watch"
+- "I'm so busy, I finished my project, and now I need to update the spreadsheet and then schedule a meeting with Sarah on Friday" → "update spreadsheet, schedule meeting with Sarah Friday"
+- "Hi, just wanted to chat but also I have a dentist appointment next Tuesday at 2pm" → "dentist appointment Tuesday 2pm"
+- "Hey, what's up? Nothing much, just need to go grocery shopping" → "grocery shopping"
 
 Cleaned intent:`
         }]
@@ -362,13 +366,18 @@ Cleaned intent:`
     const cleaned = result.response.text().trim();
     console.log("[Webhook] ✅ Extraction result:", cleaned);
     
-    // Only use extracted result if it's meaningful and different from original
-    if (cleaned.length > 0 && cleaned.length < text.length) {
-      console.log("[Webhook] 🧹 Using cleaned text instead of original");
-      return cleaned;
+    // Use extracted result if it has meaningful content
+    if (cleaned.length > 0) {
+      // Check if we got actual content (not just acknowledgments like "ok" or "thanks")
+      const isMeaningful = !/^(ok|okay|sure|yes|no|thanks|thank you|cool|got it|understood)$/i.test(cleaned) && cleaned.length > 2;
+      
+      if (isMeaningful) {
+        console.log("[Webhook] 🧹 Using extracted actionable intent");
+        return cleaned;
+      }
     }
     
-    console.log("[Webhook] Original text is concise enough, keeping as-is");
+    console.log("[Webhook] Original text is purely conversational/small talk, keeping as-is");
     return text;
   } catch (e: any) {
     console.log("[Webhook] ❌ Extraction error:", e?.message);
@@ -380,18 +389,20 @@ async function analyzeIntent(text: string): Promise<Intent> {
   const { today, tomorrow } = getTodayTomorrow();
   const apiKey = process.env.GEMINI_API_KEY;
   
-  // First, check if it's purely conversational before any processing
-  if (isConversational(text)) {
-    console.log("[Webhook] 💬 Purely conversational - skipping extraction");
-    return { type: null, title: text, date: null, time: null };
-  }
-  
-  // Then, extract actionable intent (strip filler) for non-conversational messages
+  // For ALL messages: attempt to extract actionable intent first
+  // This will find what the user actually wants, regardless of narrative
   let cleanedText = text;
   if (apiKey) {
-    console.log("[Webhook] 🔄 Attempting to extract actionable intent...");
+    console.log("[Webhook] 🔄 Attempting to extract actionable intent from ALL messages...");
     cleanedText = await extractActionableIntent(text);
-    console.log("[Webhook] Cleaned text:", cleanedText);
+    
+    // If extraction returned short acknowledgments, it's purely conversational
+    if (/^(ok|okay|sure|yes|no|thanks|thank you|cool|got it|understood|hi|hey|hello)$/i.test(cleanedText.trim())) {
+      console.log("[Webhook] 💬 Detected pure conversational message");
+      return { type: null, title: text, date: null, time: null };
+    }
+    
+    console.log("[Webhook] 📝 Cleaned text:", cleanedText);
   }
   
   if (apiKey) {
@@ -427,10 +438,8 @@ function fallbackIntent(text: string): Intent {
   const { today, tomorrow } = getTodayTomorrow();
   const lower = text.toLowerCase().trim();
   
-  // CONVERSATIONAL: Use the same detection logic
-  if (isConversational(text)) {
-    return { type: null, title: text, date: null, time: null };  // Conversational
-  }
+  // Note: Text should already be cleaned by extraction function before reaching here
+  // This fallback just handles dates/times and type classification
   
   // Extract date/time FIRST (before type classification)
   let date: string | null = null;
