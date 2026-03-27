@@ -321,17 +321,17 @@ function isConversational(text: string): boolean {
 // Extract actionable intent from conversational messages
 async function extractActionableIntent(text: string): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return text;
-
-  // Skip extraction for clearly conversational messages
-  if (isConversational(text)) {
-    console.log("[Webhook] 💬 Skipping extraction - message is conversational");
+  if (!apiKey) {
+    console.log("[Webhook] 🔴 No GEMINI_API_KEY - skipping extraction");
     return text;
   }
 
   try {
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    
+    console.log("[Webhook] 🔄 Extracting actionable intent from:", text.slice(0, 100));
+    
     const result = await model.generateContent({
       contents: [{
         role: "user",
@@ -360,10 +360,18 @@ Cleaned intent:`
     });
 
     const cleaned = result.response.text().trim();
-    console.log("[Webhook] 🧹 Cleaned intent:", cleaned);
-    return cleaned.length > 5 ? cleaned : text;  // Fallback to original if extraction failed
+    console.log("[Webhook] ✅ Extraction result:", cleaned);
+    
+    // Only use extracted result if it's meaningful and different from original
+    if (cleaned.length > 0 && cleaned.length < text.length) {
+      console.log("[Webhook] 🧹 Using cleaned text instead of original");
+      return cleaned;
+    }
+    
+    console.log("[Webhook] Original text is concise enough, keeping as-is");
+    return text;
   } catch (e: any) {
-    console.log("[Webhook] Intent extraction failed:", e?.message);
+    console.log("[Webhook] ❌ Extraction error:", e?.message);
     return text;
   }
 }
@@ -372,10 +380,18 @@ async function analyzeIntent(text: string): Promise<Intent> {
   const { today, tomorrow } = getTodayTomorrow();
   const apiKey = process.env.GEMINI_API_KEY;
   
-  // First, extract actionable intent (strip filler)
+  // First, check if it's purely conversational before any processing
+  if (isConversational(text)) {
+    console.log("[Webhook] 💬 Purely conversational - skipping extraction");
+    return { type: null, title: text, date: null, time: null };
+  }
+  
+  // Then, extract actionable intent (strip filler) for non-conversational messages
   let cleanedText = text;
-  if (apiKey && text.length > 30) {  // Only clean longer messages that might have narrative
+  if (apiKey) {
+    console.log("[Webhook] 🔄 Attempting to extract actionable intent...");
     cleanedText = await extractActionableIntent(text);
+    console.log("[Webhook] Cleaned text:", cleanedText);
   }
   
   if (apiKey) {
@@ -392,7 +408,7 @@ async function analyzeIntent(text: string): Promise<Intent> {
         generationConfig: { maxOutputTokens: 500, temperature: 0.1 },
       });
       const raw = result.response.text().trim().replace(/```json|```/g, "").trim();
-      console.log("[Webhook] Gemini raw:", raw);
+      console.log("[Webhook] 📊 Gemini classification:", raw);
       const parsed = JSON.parse(raw);
       return {
         type: parsed.type ?? null,
@@ -678,9 +694,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true }, { status: 200 });
     }
 
-    // 6. Quick intent for fast response
-    const quickIntent = fallbackIntent(text);
-    console.log("[Webhook] Quick Intent (fallback):", JSON.stringify(quickIntent));
+    // 6. Quick intent for fast response - use full analyzeIntent to extract actionable content
+    const quickIntent = await analyzeIntent(text);
+    console.log("[Webhook] Quick Intent (AI-analyzed):", JSON.stringify(quickIntent));
 
     // Determine source (already extracted audioUrl/imageUrl above)
     const source = imageUrl ? "📸 iMessage Image" : audioUrl ? "🎙️ iMessage Voice" : "📱 iMessage Text";
