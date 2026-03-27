@@ -591,16 +591,9 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
       y: Math.max(8, window.innerHeight - defaultHeight - 16),
     };
     
-    // Try to load saved position, but default to bottom-right
-    const saved = safeJsonParse<{ x: number; y: number }>(
-      window.localStorage.getItem(CHAT_WIDGET_POSITION_LS_KEY) || ""
-    );
-    
-    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
-      setPosition(saved);
-    } else {
-      setPosition(bottomRightPosition);
-    }
+    // Clear old position and always start at bottom-right
+    window.localStorage.removeItem(CHAT_WIDGET_POSITION_LS_KEY);
+    setPosition(bottomRightPosition);
   }, []);
 
   useEffect(() => {
