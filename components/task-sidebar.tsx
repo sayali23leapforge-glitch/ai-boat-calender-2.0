@@ -15,6 +15,7 @@ interface TaskSidebarProps {
   onFilterChange: (filter: string) => void
   isCollapsed: boolean
   onToggleCollapse: () => void
+  className?: string
 }
 
 export function TaskSidebar({
@@ -23,6 +24,7 @@ export function TaskSidebar({
   onFilterChange,
   isCollapsed,
   onToggleCollapse,
+  className = "",
 }: TaskSidebarProps) {
   const [lists, setLists] = useState<TaskList[]>([])
   const [taskCounts, setTaskCounts] = useState<Record<string, number>>({})
@@ -99,7 +101,7 @@ export function TaskSidebar({
   }
 
   return (
-    <div className={`${isCollapsed ? "w-16" : "w-72"} bg-white border-r border-gray-200 flex flex-col h-full transition-all duration-200`}>
+    <div className={`${isCollapsed ? "w-16" : "w-72"} bg-white border-r border-gray-200 flex flex-col h-full transition-all duration-200 ${className}`}>
       <div className="p-3 border-b border-gray-200 flex items-center justify-between">
         {!isCollapsed && <h1 className="text-lg font-semibold text-gray-900">Tasks</h1>}
         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onToggleCollapse}>

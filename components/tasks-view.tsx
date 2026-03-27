@@ -8,6 +8,7 @@ import { supabase } from "@/lib/supabase"
 import { getTaskLists, deleteTaskList, type TaskList } from "@/lib/task-lists"
 import { getTasks, createTask, updateTask, deleteTask, toggleTaskComplete, toggleTaskStarred, type Task } from "@/lib/tasks"
 import { toast } from "sonner"
+import { Menu, X, CheckSquare, Star } from "lucide-react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -34,6 +35,7 @@ export function TasksView({ userId }: TasksViewProps) {
   const [listToDelete, setListToDelete] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
   const [isMobile, setIsMobile] = useState(false)
+  const [showMobileMenu, setShowMobileMenu] = useState(false)
 
   useEffect(() => {
     if (!userId) return
@@ -274,16 +276,87 @@ export function TasksView({ userId }: TasksViewProps) {
   }, [activeFilter, lists])
 
   return (
-    <div className="flex h-full bg-background">
-      <TaskSidebar
-        userId={userId}
-        activeFilter={activeFilter}
-        onFilterChange={setActiveFilter}
-        isCollapsed={isTaskSidebarCollapsed}
-        onToggleCollapse={() => setIsTaskSidebarCollapsed((prev) => !prev)}
-      />
+    <div className="flex flex-col h-full bg-background">
+      {/* Mobile Header */}
+      {isMobile && (
+        <div className="flex items-center justify-between p-4 border-b border-border/50 bg-muted/30">
+          <h1 className="text-lg font-semibold">Tasks</h1>
+          <button
+            onClick={() => setShowMobileMenu(!showMobileMenu)}
+            className="p-2 hover:bg-accent rounded-lg transition-colors"
+          >
+            {showMobileMenu ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
+        </div>
+      )}
 
-      <main className="flex-1 overflow-auto p-4 md:p-5">
+      {/* Mobile Dropdown Menu */}
+      {isMobile && showMobileMenu && (
+        <div className="border-b border-border/50 bg-muted/20 p-3 space-y-2">
+          <button
+            onClick={() => {
+              setActiveFilter('all')
+              setShowMobileMenu(false)
+            }}
+            className={`w-full text-left px-3 py-2 rounded-lg transition-colors ${
+              activeFilter === 'all' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <CheckSquare className="h-4 w-4" />
+              <span>All Tasks</span>
+            </div>
+          </button>
+          
+          <button
+            onClick={() => {
+              setActiveFilter('starred')
+              setShowMobileMenu(false)
+            }}
+            className={`w-full text-left px-3 py-2 rounded-lg transition-colors ${
+              activeFilter === 'starred' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <Star className="h-4 w-4" />
+              <span>Starred</span>
+            </div>
+          </button>
+          
+          {lists.map(list => (
+            <button
+              key={list.id}
+              onClick={() => {
+                setActiveFilter(list.id)
+                setShowMobileMenu(false)
+              }}
+              className={`w-full text-left px-3 py-2 rounded-lg transition-colors ${
+                activeFilter === list.id ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <div
+                  className="h-3 w-3 rounded-full"
+                  style={{ backgroundColor: list.color }}
+                ></div>
+                <span className="text-sm">{list.name}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="flex flex-1 overflow-hidden">
+        <TaskSidebar
+          userId={userId}
+          activeFilter={activeFilter}
+          onFilterChange={setActiveFilter}
+          isCollapsed={isTaskSidebarCollapsed}
+          onToggleCollapse={() => setIsTaskSidebarCollapsed((prev) => !prev)}
+          className="hidden md:flex"
+        />
+
+        <main className="flex-1 overflow-auto p-4 md:p-5">
         {isLoading ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center animate-in-smooth">
@@ -350,7 +423,8 @@ export function TasksView({ userId }: TasksViewProps) {
             ))}
           </div>
         )}
-      </main>
+        </main>
+      </div>
 
       <TaskDetailDialog
         task={selectedTask}
