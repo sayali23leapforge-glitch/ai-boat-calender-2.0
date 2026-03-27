@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 import { randomUUID } from "crypto";
+import { imageProcessing } from "@/lib/image-processor";
 
 type AttachmentInput = {
   data?: string;
@@ -403,7 +404,6 @@ export async function POST(req: NextRequest) {
 
     if (attachments.length > 0) {
       const conversationId = getConversationId(payload);
-      const uploaded: string[] = [];
 
       for (const attachment of attachments) {
         const resolved = await getAttachmentBuffer(attachment);
@@ -422,26 +422,79 @@ export async function POST(req: NextRequest) {
             upsert: true,
           });
 
-        if (uploadError) continue;
+        if (uploadError) {
+          console.error("Storage upload failed:", uploadError);
+          responseMessages.push("Failed to upload attachment.");
+          continue;
+        }
 
         const { data: publicUrlData } = admin.storage.from(bucket).getPublicUrl(filePath);
         const publicUrl = publicUrlData.publicUrl;
 
-        const { error: insertError } = await admin.from("image_uploads").insert({
-          id: randomUUID(),
-          user_id: userId,
-          conversation_id: conversationId,
-          sender: normalizedPhone,
-          image_url: publicUrl,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
+        if (isImage) {
+          // Pass the buffer we already have directly to the processor — no re-download,
+          // no dependency on the bucket being public.
+          try {
+            const imageUpload = await imageProcessing.processImageBuffer(
+              Buffer.from(resolved.buffer),
+              contentType,
+              publicUrl,
+              userId,
+              conversationId,
+              normalizedPhone,
+            );
 
-        if (!insertError) uploaded.push(publicUrl);
-      }
+            if (imageUpload.extractedEvents.length > 0) {
+              const { eventIds, taskIds } = await imageProcessing.createEventsFromImage(imageUpload, userId);
+              const parts: string[] = [];
+              if (eventIds.length > 0) {
+                const titles = imageUpload.extractedEvents
+                  .filter((e) => e.type !== "task")
+                  .map((e) => e.title)
+                  .join(", ");
+                parts.push(`📅 ${eventIds.length} event(s) added to your calendar: ${titles}`);
+              }
+              if (taskIds.length > 0) {
+                const titles = imageUpload.extractedEvents
+                  .filter((e) => e.type === "task")
+                  .map((e) => e.title)
+                  .join(", ");
+                parts.push(`✅ ${taskIds.length} task(s) created: ${titles}`);
+              }
+              if (parts.length === 0) {
+                parts.push("Image analyzed but saving to calendar failed. Please try again.");
+              }
+              responseMessages.push(parts.join(" "));
+            } else {
+              // No events/tasks found — ask the user for clarification
+              responseMessages.push(
+                imageUpload.extractedDates.length > 0
+                  ? `I found ${imageUpload.extractedDates.length} date(s) in the image but couldn't identify a clear event or task. Could you tell me what you'd like to create?`
+                  : "I couldn't find any events or tasks in that image. Could you describe what you'd like to add to your calendar?"
+              );
+            }
+          } catch (imgErr) {
+            console.error("Image AI pipeline error:", imgErr);
+            responseMessages.push("I received your image but had trouble analyzing it. Please try again or describe the event in text.");
+          }
+        } else {
+          // Non-image attachments: record URL only (no AI extraction)
+          const { error: insertError } = await admin.from("image_uploads").insert({
+            id: randomUUID(),
+            user_id: userId,
+            conversation_id: conversationId,
+            sender: normalizedPhone,
+            image_url: publicUrl,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
 
-      if (uploaded.length > 0) {
-        responseMessages.push(`Saved ${uploaded.length} attachment(s).`);
+          if (insertError) {
+            console.error("Document record insert failed:", insertError);
+          } else {
+            responseMessages.push("Document saved.");
+          }
+        }
       }
     }
 

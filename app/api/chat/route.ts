@@ -293,43 +293,6 @@ function extractFirstJsonObject(text: string): any | null {
   return null;
 }
 
-function isConversationOnlyMessage(message: string): boolean {
-  const msg = message.trim().toLowerCase();
-  
-  // Greetings and casual chat
-  if (/^(hi|hey|hello|howdy|yo|what's up|whatsup|sup|greetings)(\s|!|\?)?$/.test(msg)) return true;
-  if (/^(good morning|good afternoon|good evening|good night|good day)(\s|!)?/.test(msg)) return true;
-  
-  // Questions that are NOT about creation (asking for information/clarification)
-  const questionPatterns = [
-    /^(did you|have you|did i|can you|what did).*(\?)?$/,  // "did you create", "have you", etc.
-    /^(what|when|where|why|how).*(\?)?$/,  // "what", "when", etc. - ask for info
-    /^(tell me|explain|describe|clarify).*(\?)?$/,  // asking for explanation
-    /^(are you|is it|is there).*(\?)?$/,  // yes/no questions
-  ];
-  
-  if (questionPatterns.some(p => p.test(msg))) {
-    // But NOT if it's clearly asking to CREATE something
-    const creationKeywords = /^(create|make|add|set|schedule|plan|book|reserve|request)(\s|$)/;
-    if (!creationKeywords.test(msg)) return true;
-  }
-  
-  // Random chat or responses
-  if (/^(lol|haha|hahaha|nice|cool|awesome|thanks|thank you|no|yes|ok|okay|sure)(\s|!|\?)?$/.test(msg)) return true;
-  
-  // Keep-alive or filler messages
-  if (msg.length < 5) return true;  // Very short messages are likely not task creation
-  
-  return false;
-}
-
-// Helper to detect if message is requesting creation
-function isCreationRequest(message: string): boolean {
-  const msg = message.trim().toLowerCase();
-  const creationKeywords = /\b(create|make|add|set|schedule|plan|book|reserve|request|send|remind|new|build|organize|list|prepare)\b/;
-  return creationKeywords.test(msg);
-}
-
 // Helper to normalize time tokens
 function normalizeTimeTokens(input: string): string {
   let s = (input || "").trim();
@@ -918,12 +881,23 @@ type PlannerOutput = {
 // ===========================
 // OpenAI call helper
 // ===========================
-async function callGemini(geminiApiKey: string, messages: any[]) {
+async function callGemini(
+  geminiApiKey: string,
+  messages: any[],
+  imageAttachments?: Array<{ data: string; mimeType: string }>
+) {
   // Use gemini-2.5-flash model with new API format
   const systemMsg = messages.find(m => m.role === 'system')?.content || '';
   const userMsg = messages.find(m => m.role === 'user')?.content || '';
-  
+
   const fullPrompt = systemMsg ? `${systemMsg}\n\n${userMsg}` : userMsg;
+
+  // Build parts array: image inline_data parts first, then the text prompt.
+  // Gemini Vision requires inline_data parts to precede the text part.
+  const imageParts = (imageAttachments || []).map(img => ({
+    inline_data: { mime_type: img.mimeType, data: img.data },
+  }));
+  const parts = [...imageParts, { text: fullPrompt }];
 
   const geminiResp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`, {
     method: "POST",
@@ -931,15 +905,7 @@ async function callGemini(geminiApiKey: string, messages: any[]) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      contents: [
-        {
-          parts: [
-            {
-              text: fullPrompt,
-            },
-          ],
-        },
-      ],
+      contents: [{ parts }],
     }),
   });
 
@@ -1035,6 +1001,37 @@ export async function POST(req: NextRequest) {
 
     const rawMessages = Array.isArray(body?.messages) ? body.messages : [];
     const context = body?.context ?? {};
+
+    // Download image URLs server-side and convert to base64 for Gemini Vision.
+    // The widget sends public Supabase Storage URLs instead of base64 payloads to
+    // avoid hitting the browser→API request body size limit.
+    const imageUrls: string[] = Array.isArray(body?.imageUrls) ? body.imageUrls : [];
+    let imageAttachments: Array<{ data: string; mimeType: string }> | undefined;
+    if (imageUrls.length > 0) {
+      const downloaded = await Promise.all(
+        imageUrls.map(async (url: string) => {
+          try {
+            const res = await fetch(url);
+            if (!res.ok) { console.warn(`[/api/chat] Image download failed: ${url}`); return null; }
+            const buffer = await res.arrayBuffer();
+            const rawType = res.headers.get('content-type')?.split(';')[0].trim() ?? '';
+            const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const;
+            type ValidMime = (typeof validTypes)[number];
+            const ext = url.split('?')[0].split('.').pop()?.toLowerCase();
+            const extMap: Record<string, ValidMime> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };
+            const mimeType: ValidMime = validTypes.includes(rawType as ValidMime)
+              ? rawType as ValidMime
+              : (ext && extMap[ext]) ? extMap[ext] : 'image/jpeg';
+            return { data: Buffer.from(buffer).toString('base64'), mimeType };
+          } catch (err) {
+            console.error(`[/api/chat] Failed to download image ${url}:`, err);
+            return null;
+          }
+        })
+      );
+      const valid = downloaded.filter(Boolean) as Array<{ data: string; mimeType: string }>;
+      if (valid.length > 0) imageAttachments = valid;
+    }
     const tz: string = context?.timezone || "Asia/Kolkata";
     const pendingEventDraft: PendingEventDraft | null =
       context?.pendingEventDraft && typeof context.pendingEventDraft === "object"
@@ -1185,7 +1182,7 @@ export async function POST(req: NextRequest) {
       const greetResp = await callGemini(geminiApiKey, [
         { role: "system", content: "You are a friendly assistant. Reply naturally and briefly to the user's message. 1-2 sentences max." },
         { role: "user", content: lastUserText },
-      ]);
+      ], imageAttachments);
       const greetText = greetResp.data?.choices?.[0]?.message?.content || "Hey! How can I help?";
       return NextResponse.json({
         assistantText: greetText,
@@ -1370,16 +1367,77 @@ Rules for items:
 - Output must be strict JSON (no code fences, no trailing commas)
 
 Timezone: ${tz}
+Today: ${getYmdInTimeZone(tz)} (THIS IS THE CURRENT DATE — use this year when resolving any relative date like "today", "tomorrow", "next week")
+Tomorrow: ${addDaysYmd(getYmdInTimeZone(tz), 1)}
 Now ISO: ${new Date().toISOString()}
 
 ${recentEntitiesBlock}
 ${durationHint}
+${imageAttachments && imageAttachments.length > 0 ? `
+=== IMAGE ATTACHED ===
+You can see the attached image(s) above. Read every title, date, time, and location visible.
+
+RULES — follow exactly based on what you find:
+
+A) EXACTLY ONE EVENT, date is unambiguous AND in the future (on or after today ${getYmdInTimeZone(tz)}):
+   → isConversationOnly=false, emit the event item directly. Do NOT ask.
+   Example: "Sarah's Birthday Bash, April 12 2026, 7 PM–11 PM, 42 Maple St"
+   → kind="event", title="Sarah's Birthday Bash", date="2026-04-12", time="19:00", endTime="23:00", location="42 Maple St"
+
+A2) EXACTLY ONE EVENT, but the date shown in the image is IN THE PAST (before today ${getYmdInTimeZone(tz)}):
+   → isConversationOnly=true, items=[]
+   → assistantText MUST include all event details AND ask about the year, so details survive in history.
+   Format (fill in real values from the image):
+   "The image shows:
+   📅 [Title] — [date from image], [time], [location]
+   That date has already passed. Did you mean [same month/day next year], or a different date?"
+
+B) TWO OR MORE DISTINCT EVENTS found in the image:
+   → isConversationOnly=true, items=[]
+   → assistantText must list every event, numbered, with date/time/location, then ask which to add.
+   Format:
+   "I found [N] events in this image:
+   1. [Title] — [Date], [Time], [Location]
+   2. [Title] — [Date], [Time], [Location]
+   ...
+   Which would you like to add to your calendar? Reply with numbers (e.g. \"1 and 3\") or \"all\"."
+
+C) DATE IS AMBIGUOUS (day+month only with no year, or format like M/D/YY that could be read two ways):
+   → isConversationOnly=true, items=[]
+   → assistantText MUST include ALL event details from the image AND ask about the date.
+   CRITICAL: Include the title, time, and location so they survive in conversation history and can be used when the user replies.
+   Format (fill in real values from the image):
+   "I found this event in the image:
+   📅 [Title] — [ambiguous date], [time], [location]
+   Is the date [interpretation A, e.g. March 4, 2026] or [interpretation B, e.g. April 3, 2026]?"
+
+D) NO EVENTS FOUND:
+   → isConversationOnly=true, items=[]
+   → Tell user nothing was detected and ask them to describe the event.
+
+Time conversion: "7:00 PM" → "19:00", "6:30 PM" → "18:30", "11:00 PM" → "23:00".
+Year inference: if only month+day given (no year), use ${new Date().getFullYear()} unless that date has already passed, then use ${new Date().getFullYear() + 1}.` : ''}
 `.trim();
 
+    // Include recent conversation history so follow-up replies like "Add events 1 and 3"
+    // can reference events the bot listed in its previous response.
+    const historyBlock = (rawMessages as any[]).slice(-11, -1)
+      .map((m: any) => {
+        const role = m?.role === "user" ? "User" : m?.role === "assistant" ? "Assistant" : null;
+        const content = typeof m?.content === "string" ? m.content.slice(0, 400) : null;
+        return role && content ? `${role}: ${content}` : null;
+      })
+      .filter(Boolean)
+      .join("\n\n");
+
+    const plannerSystemFinal = historyBlock
+      ? `${plannerSystem}\n\n=== RECENT CONVERSATION ===\n${historyBlock}`
+      : plannerSystem;
+
     const planner = await callGemini(geminiApiKey, [
-      { role: "system", content: plannerSystem }, 
+      { role: "system", content: plannerSystemFinal },
       ...contextMessages
-    ]);
+    ], imageAttachments);
 
     if (!planner.ok) {
       return NextResponse.json(
@@ -1412,9 +1470,23 @@ ${durationHint}
 
     // --- CONVERSATION-ONLY MESSAGE HANDLING ---
     if ((plan as any).isConversationOnly === true) {
+      const plannerText = (plan as any).assistantText as string | undefined;
+
+      // If the planner already composed a reply (e.g. event list, date clarification),
+      // use it directly — no second Gemini call needed.
+      if (plannerText && plannerText.trim().length > 0) {
+        console.log("[/api/chat] Using planner assistantText directly:", { rid, text: plannerText.substring(0, 100) });
+        return NextResponse.json({
+          assistantText: plannerText.trim(),
+          toolCalls: [],
+          requestId: rid,
+        } satisfies ChatApiResponse);
+      }
+
       console.log("[/api/chat] Detected conversation-only message, generating natural response");
-      
-      // Call Gemini to generate a conversational response (no creation actions)
+
+      // Planner had no specific reply — fall back to a lightweight Gemini call
+      // for greetings, casual chat, and open-ended questions.
       const conversationSystem = `You are a friendly, helpful AI assistant. The user is chatting with you for conversation, information, or clarification.
 
 Respond naturally and conversationally. Be brief, friendly, and helpful.
@@ -1428,7 +1500,7 @@ Keep responses concise (1-2 sentences usually).`;
       const conversationResp = await callGemini(geminiApiKey, [
         { role: "system", content: conversationSystem },
         ...contextMessages
-      ]);
+      ], imageAttachments);
 
       if (!conversationResp.ok) {
         return NextResponse.json({
@@ -2034,6 +2106,13 @@ Keep responses concise (1-2 sentences usually).`;
         const startTime = normalizeHHMM(proposed?.startTime);
         const endTime = normalizeHHMM(proposed?.endTime);
 
+        // Never check conflicts for past dates — old deleted events would cause false positives
+        const today = getYmdInTimeZone(tz);
+        if (date < today) {
+          serverResults["conflicts"] = { ok: true, hasTime: false, conflicts: [], note: "Past date — no conflict check." };
+          continue;
+        }
+
         const events = await fetchEventsForRangeAdmin({ userId: uid, startDate: date, endDate: date });
 
         if (!startTime) {
@@ -2245,6 +2324,7 @@ Keep responses concise (1-2 sentences usually).`;
     }));
 
     // Server-side execution for non-interactive clients (e.g., Voice, iMessage)
+    // executeServerIntents already declared above at the pre-flight gate
     const serverActionsPerformed: string[] = [];
 
     if (executeServerIntents) {

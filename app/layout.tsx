@@ -26,7 +26,7 @@ export default function RootLayout({
             {children}
           </ErrorBoundary>
         </AuthProvider>
-        <Toaster />
+        <Toaster position="bottom-left" />
         <Analytics />
       </body>
     </html>

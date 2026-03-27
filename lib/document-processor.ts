@@ -64,7 +64,10 @@ export async function uploadDocument(file: File, userId: string) {
     const { document } = await apiResponse.json()
     console.log('✅ Document created successfully:', document)
 
-    return document
+    // Attach the public storage URL so callers can pass it to the chat API
+    // without needing to re-derive it. The 'documents' bucket is public.
+    const { data: urlData } = supabase.storage.from('documents').getPublicUrl(fileName)
+    return { ...document, publicUrl: urlData.publicUrl }
   } catch (error) {
     console.error('Error uploading document:', error)
     throw error
