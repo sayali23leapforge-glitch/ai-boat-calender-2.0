@@ -33,13 +33,13 @@ export async function POST(req: NextRequest) {
     );
 
     let createdEventIds: string[] = [];
+    let createdTaskIds: string[] = [];
 
-    // Optionally create calendar events from extracted data
+    // Optionally create calendar events and tasks from extracted data
     if (createEvents && imageUpload.extractedEvents.length > 0) {
-      createdEventIds = await imageProcessing.createEventsFromImage(
-        imageUpload,
-        userId
-      );
+      const result = await imageProcessing.createEventsFromImage(imageUpload, userId);
+      createdEventIds = result.eventIds;
+      createdTaskIds = result.taskIds;
     }
 
     // Send summary via iMessage if conversationId provided
@@ -52,13 +52,14 @@ export async function POST(req: NextRequest) {
 📅 Dates found: ${imageUpload.extractedDates.length}
 ${imageUpload.extractedDates.map((d) => `  • ${d}`).join('\n')}
 
-📝 Events: ${imageUpload.extractedEvents.length}
+📝 Items: ${imageUpload.extractedEvents.length}
 ${imageUpload.extractedEvents
   .slice(0, 3)
-  .map((e) => `  • ${e.title} - ${e.date}`)
+  .map((e) => `  • ${e.title}${e.date ? ' - ' + e.date : ''}`)
   .join('\n')}
 
 ${createdEventIds.length > 0 ? `✓ Added ${createdEventIds.length} event(s) to calendar` : ''}
+${createdTaskIds.length > 0 ? `✓ Created ${createdTaskIds.length} task(s)` : ''}
         `.trim();
 
         try {
@@ -77,7 +78,8 @@ ${createdEventIds.length > 0 ? `✓ Added ${createdEventIds.length} event(s) to 
       status: 'success',
       imageUpload,
       createdEventIds,
-      message: `Image processed: ${imageUpload.extractedDates.length} date(s) found, ${createdEventIds.length} event(s) created`,
+      createdTaskIds,
+      message: `Image processed: ${imageUpload.extractedDates.length} date(s) found, ${createdEventIds.length} event(s) and ${createdTaskIds.length} task(s) created`,
     });
   } catch (error) {
     console.error('Image processing error:', error);
