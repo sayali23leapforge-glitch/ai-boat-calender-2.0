@@ -587,8 +587,8 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
     const defaultWidth = Math.min(380, Math.floor(window.innerWidth * 0.92));
     const defaultHeight = 520;
     const bottomRightPosition = {
-      x: Math.max(8, window.innerWidth - defaultWidth - 16),
-      y: Math.max(8, window.innerHeight - defaultHeight - 16),
+      x: Math.max(8, window.innerWidth - defaultWidth - 8),
+      y: Math.max(8, window.innerHeight - defaultHeight - 20),
     };
     
     // Clear old position and always start at bottom-right
