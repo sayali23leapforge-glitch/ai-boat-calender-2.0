@@ -833,14 +833,20 @@ export async function POST(req: NextRequest) {
       await sendBloo(replyTo, `❌ Error: ${dbError.slice(0, 60)}. Please try again.`, blooNumber);
     } else {
       // Conversational response - no DB involved (greetings, questions, etc.)
-      const isGreeting = /\b(hello|hi|hey|how are you|what's up|sup)\b/i.test(text);
+      // Distinguish between short greetings vs longer casual questions
+      const shortGreeting = /^(hi|hey|hello|thanks|thank you|cool|ok|okay|sure|yes|no|lol|haha)$/i.test(text.trim());
+      const casualQuestion = /\b(how are you|how are you doing|what's up|sup|what are you doing|what are you up to|what's going on|how's it going|how's your day|how's everything|how's your evening|how's your morning)\b/i.test(text.toLowerCase());
+      
       let response = "";
       
-      if (isGreeting) {
-        // Quick greeting response
-        response = "👋 Hey there! I'm Cal, your calendar assistant! 📱\n\nWhat can I help you with today? You can create:\n• 📝 Tasks - \"Buy milk\"\n• 📅 Events - \"Meeting tomorrow 2pm\"\n• 🎯 Goals - \"Exercise daily\"";
+      if (shortGreeting) {
+        // Short casual greeting - show full welcome with examples
+        response = "Hey there! 👋 I'm Cal, your calendar assistant! 📱\n\n😊 That's a great question!\n\nWhat would you like to create today?\n\n📝 **TASK** - \"Buy groceries\" or \"Call mom\"\n📅 **EVENT** - \"Meeting tomorrow at 2pm\" or \"Dinner Friday 7pm\"\n🎯 **GOAL** - \"Learn guitar daily\" or \"Exercise 3x week\"\n\nOr just chat with me! 💬";
+      } else if (casualQuestion) {
+        // Longer casual question - casual friendly reply
+        response = "😊 I'm doing great, thanks for asking! 👋\n\nWhat can I help you with today? You can create:\n• 📝 Tasks - \"Buy milk\"\n• 📅 Events - \"Meeting tomorrow 2pm\"\n• 🎯 Goals - \"Exercise daily\"\n\nOr just chat! 💬";
       } else {
-        // Generic fallback for other questions
+        // Other questions/comments - friendly greeting with options
         response = "Hey there! 👋 I'm Cal, your calendar assistant! 📱\n\n😊 That's a great question!\n\nWhat would you like to create today?\n\n📝 **TASK** - \"Buy groceries\" or \"Call mom\"\n📅 **EVENT** - \"Meeting tomorrow at 2pm\" or \"Dinner Friday 7pm\"\n🎯 **GOAL** - \"Learn guitar daily\" or \"Exercise 3x week\"\n\nOr just chat with me! 💬";
       }
       
