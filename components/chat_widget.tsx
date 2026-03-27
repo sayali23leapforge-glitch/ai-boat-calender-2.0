@@ -580,20 +580,25 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    
+    // Always calculate bottom-right position on load
+    const defaultWidth = Math.min(380, Math.floor(window.innerWidth * 0.92));
+    const defaultHeight = 520;
+    const bottomRightPosition = {
+      x: Math.max(8, window.innerWidth - defaultWidth - 16),
+      y: Math.max(8, window.innerHeight - defaultHeight - 16),
+    };
+    
+    // Try to load saved position, but default to bottom-right
     const saved = safeJsonParse<{ x: number; y: number }>(
       window.localStorage.getItem(CHAT_WIDGET_POSITION_LS_KEY) || ""
     );
+    
     if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
       setPosition(saved);
-      return;
+    } else {
+      setPosition(bottomRightPosition);
     }
-
-    const defaultWidth = Math.min(380, Math.floor(window.innerWidth * 0.92));
-    const defaultHeight = 520;
-    setPosition({
-      x: Math.max(8, window.innerWidth - defaultWidth - 16),
-      y: Math.max(8, window.innerHeight - defaultHeight - 16),
-    });
   }, []);
 
   useEffect(() => {
