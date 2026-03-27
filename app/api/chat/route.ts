@@ -382,13 +382,20 @@ function minutesToHHMM(mins: number): string {
 }
 
 function getYmdInTimeZone(timeZone: string, dateObj = new Date()): string {
-  const fmt = new Intl.DateTimeFormat("en-CA", {
+  const fmt = new Intl.DateTimeFormat("en-US", {
     timeZone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   });
-  return fmt.format(dateObj); // YYYY-MM-DD
+  const parts = fmt.formatToParts(dateObj);
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+  if (year && month && day) return `${year}-${month}-${day}`;
+  // Fallback (should rarely happen)
+  const iso = new Date(dateObj).toISOString().slice(0, 10);
+  return iso;
 }
 
 function addDaysYmd(ymd: string, days: number): string {
@@ -399,6 +406,60 @@ function addDaysYmd(ymd: string, days: number): string {
   const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(dt.getUTCDate()).padStart(2, "0");
   return `${yy}-${mm}-${dd}`;
+}
+
+function sanitizeTimeZone(input?: string | null): string | undefined {
+  const tz = String(input || "").trim();
+  if (!tz) return undefined;
+  try {
+    // Throws RangeError for invalid IANA timezones.
+    new Intl.DateTimeFormat("en-US", { timeZone: tz }).format(new Date());
+    return tz;
+  } catch {
+    return undefined;
+  }
+}
+
+function weekdayTokenToIndex(token: string): number | undefined {
+  const t = (token || "").trim().toLowerCase();
+  if (!t) return undefined;
+  if (t === "sunday" || t === "sun") return 0;
+  if (t === "monday" || t === "mon") return 1;
+  if (t === "tuesday" || t === "tue" || t === "tues") return 2;
+  if (t === "wednesday" || t === "wed") return 3;
+  if (t === "thursday" || t === "thu" || t === "thur" || t === "thurs") return 4;
+  if (t === "friday" || t === "fri") return 5;
+  if (t === "saturday" || t === "sat") return 6;
+  return undefined;
+}
+
+function ymdWeekdayIndex(ymd: string): number {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y || 1970, (m || 1) - 1, d || 1));
+  return dt.getUTCDay();
+}
+
+function resolveWeekdayExpressionToYmd(input: string, tz: string): string | undefined {
+  const s = String(input || "").trim().toLowerCase();
+  if (!s) return undefined;
+
+  const m = s.match(
+    /\b(?:(next|this)\s+)?(monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat|sunday|sun)\b/i
+  );
+  if (!m) return undefined;
+
+  const modifier = (m[1] || "").toLowerCase();
+  const target = weekdayTokenToIndex(m[2] || "");
+  if (target === undefined) return undefined;
+
+  const today = getYmdInTimeZone(tz);
+  const current = ymdWeekdayIndex(today);
+  let delta = (target - current + 7) % 7;
+
+  // "next Thursday" should always mean a future date, never today.
+  if (modifier === "next" && delta === 0) delta = 7;
+
+  return addDaysYmd(today, delta);
 }
 
 function overlap(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
@@ -502,7 +563,7 @@ function resolveDateToken(dateLike: any, tz: string): string | undefined {
   const today = getYmdInTimeZone(tz);
   if (raw === "today") return today;
   if (raw === "tomorrow") return addDaysYmd(today, 1);
-  return undefined;
+  return resolveWeekdayExpressionToYmd(raw, tz);
 }
 
 // ✅ extract date from user message if planner forgot to include it
@@ -511,6 +572,11 @@ function extractDateFromUserText(text: string, tz: string): string | undefined {
 
   const m = s.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if (m?.[1]) return m[1];
+
+  // Prefer explicit weekday references over generic words like "today"
+  // when both appear in the same sentence.
+  const weekdayDate = resolveWeekdayExpressionToYmd(s, tz);
+  if (weekdayDate) return weekdayDate;
 
   const today = getYmdInTimeZone(tz);
   if (/\btomorrow\b/.test(s)) return addDaysYmd(today, 1);
@@ -621,7 +687,14 @@ function extractTimeFromHistory(rawMessages: any[]): { time?: string; endTime?: 
 
 function isDateOnlyReply(text: string): boolean {
   const t = (text || "").trim().toLowerCase();
-  return t === "today" || t === "tomorrow" || /^\d{4}-\d{2}-\d{2}$/.test(t);
+  return (
+    t === "today" ||
+    t === "tomorrow" ||
+    /^\d{4}-\d{2}-\d{2}$/.test(t) ||
+    /\b(?:(next|this)\s+)?(monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat|sunday|sun)\b/i.test(
+      t
+    )
+  );
 }
 
 // ======================
@@ -1035,7 +1108,10 @@ export async function POST(req: NextRequest) {
       const valid = downloaded.filter(Boolean) as Array<{ data: string; mimeType: string }>;
       if (valid.length > 0) imageAttachments = valid;
     }
-    const tz: string = context?.timezone || "Asia/Kolkata";
+    const tzFromContext = sanitizeTimeZone(context?.timezone);
+    const tzFromBody = sanitizeTimeZone(body?.timezone);
+    const tzFromHeader = sanitizeTimeZone(req.headers.get("x-timezone") || req.headers.get("timezone"));
+    const tz: string = tzFromContext || tzFromBody || tzFromHeader || "Asia/Kolkata";
     const pendingEventDraft: PendingEventDraft | null =
       context?.pendingEventDraft && typeof context.pendingEventDraft === "object"
         ? (context.pendingEventDraft as PendingEventDraft)
@@ -1050,6 +1126,12 @@ export async function POST(req: NextRequest) {
       fromBody: userIdFromBody, 
       bodyKeys: Object.keys(body || {}),
       bodyUserId: body?.userId 
+    });
+    console.log("[/api/chat] Timezone resolved:", {
+      tz,
+      fromContext: context?.timezone || null,
+      fromBody: body?.timezone || null,
+      fromHeader: req.headers.get("x-timezone") || req.headers.get("timezone") || null,
     });
 
     if (!rawMessages.length) {
@@ -1312,8 +1394,8 @@ Before planning, ask yourself:
 
 ABSOLUTE DATE RULE:
 - For ANY event/task due date, output a real date string in YYYY-MM-DD
-- Convert words like "today" and "tomorrow" into YYYY-MM-DD
-- If user gives weekday without a clear date, ask a follow-up question instead of guessing
+- Convert words like "today", "tomorrow", and weekdays (e.g., "Thursday", "next Friday") into YYYY-MM-DD
+- Use the nearest upcoming occurrence in the user's timezone for weekday references
 
 TIME EXTRACTION FOR EVENTS:
 - ALWAYS look for time mentions in user message (e.g., "2pm", "14:00", "2:30 pm", "at 3")
@@ -1732,9 +1814,10 @@ Style rules:
       }
 
       if (item.kind === "task") {
+        const dateFromLatestUserText = extractDateFromUserText(lastUserText, tz);
         const resolvedDueDate =
+          dateFromLatestUserText ||
           resolveDateToken((item as any).dueDate, tz) ||
-          extractDateFromUserText(lastUserText, tz) ||
           undefined;
         const resolvedDueTime =
           normalizeHHMM((item as any).dueTime || (item as any).time) ||
@@ -1776,9 +1859,10 @@ Style rules:
 
       if (item.kind === "event") {
         // --- Date resolution ---
+        const dateFromLatestUserText = extractDateFromUserText(lastUserText, tz);
         const resolvedDate =
+          dateFromLatestUserText ||
           resolveDateToken((item as any).date, tz) ||
-          extractDateFromUserText(lastUserText, tz) ||
           (/^\d{4}-\d{2}-\d{2}$/.test(String((item as any).date || "")) ? String((item as any).date) : undefined);
 
         if (!resolvedDate) {
@@ -1868,7 +1952,9 @@ Style rules:
       }
 
       if (item.kind === "update_event") {
+        const dateFromLatestUserText = extractDateFromUserText(lastUserText, tz);
         const resolvedDate =
+          dateFromLatestUserText ||
           resolveDateToken((item as any).date, tz) ||
           (/^\d{4}-\d{2}-\d{2}$/.test(String((item as any).date || "")) ? String((item as any).date) : undefined);
 
@@ -1907,14 +1993,23 @@ Style rules:
       }
 
       if (item.kind === "update_task") {
+        const resolvedDueDate =
+          extractDateFromUserText(lastUserText, tz) ||
+          resolveDateToken((item as any).dueDate, tz) ||
+          (/^\d{4}-\d{2}-\d{2}$/.test(String((item as any).dueDate || "")) ? String((item as any).dueDate) : undefined);
+        const resolvedDueTime =
+          normalizeHHMM((item as any).dueTime || (item as any).time) ||
+          extractTimeFromUserText(lastUserText) ||
+          undefined;
+
         pushClient({
           name: "update_task_by_title",
           arguments: {
             titleQuery: item.titleQuery,
             title: item.title,
             notes: item.notes,
-            dueDate: item.dueDate,
-            dueTime: item.dueTime,
+            dueDate: resolvedDueDate,
+            dueTime: resolvedDueTime,
             priority: item.priority,
             estimatedHours: item.estimatedHours,
             location: item.location,

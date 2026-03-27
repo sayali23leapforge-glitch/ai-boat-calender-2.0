@@ -10,16 +10,49 @@ export type TaskList = {
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers || {}),
-    },
-  })
-  const json = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(json?.error || `Request failed: ${res.status}`)
-  return json as T
+  const normalizedPath = path.startsWith("http://") || path.startsWith("https://")
+    ? path
+    : `/${path.replace(/^\/+/, "")}`;
+
+  const candidates: string[] = [];
+  const envBase = String(process.env.NEXT_PUBLIC_API_BASE_URL || "").trim().replace(/\/$/, "");
+  if (envBase && !/^https?:\/\//i.test(normalizedPath)) {
+    candidates.push(`${envBase}${normalizedPath}`);
+  }
+  candidates.push(normalizedPath);
+
+  const uniqueCandidates = [...new Set(candidates)];
+  let lastError: Error | null = null;
+
+  for (const url of uniqueCandidates) {
+    try {
+      const res = await fetch(url, {
+        ...init,
+        headers: {
+          "Content-Type": "application/json",
+          ...(init?.headers || {}),
+        },
+      });
+      const json = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        // In local dev we can run UI and API on different ports; try fallback.
+        if (res.status === 404 && url !== uniqueCandidates[uniqueCandidates.length - 1]) {
+          continue;
+        }
+        throw new Error((json as any)?.error || `Request failed: ${res.status}`);
+      }
+
+      return json as T;
+    } catch (err: any) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (url === uniqueCandidates[uniqueCandidates.length - 1]) {
+        throw lastError;
+      }
+    }
+  }
+
+  throw lastError || new Error("Request failed");
 }
 
 export async function getTaskLists(userId: string): Promise<TaskList[]> {
