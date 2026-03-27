@@ -583,17 +583,9 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
   useEffect(() => {
     if (typeof window === "undefined") return;
     
-    // Always calculate bottom-right position on load
-    const defaultWidth = Math.min(380, Math.floor(window.innerWidth * 0.92));
-    const defaultHeight = 520;
-    const bottomRightPosition = {
-      x: Math.max(8, window.innerWidth - defaultWidth - 8),
-      y: Math.max(8, window.innerHeight - defaultHeight - 20),
-    };
-    
-    // Clear old position and always start at bottom-right
+    // Always clear position and start at bottom-right
     window.localStorage.removeItem(CHAT_WIDGET_POSITION_LS_KEY);
-    setPosition(bottomRightPosition);
+    setPosition({ x: 0, y: 0 }); // Default values, will use CSS bottom/right instead
   }, []);
 
   useEffect(() => {
@@ -1817,8 +1809,8 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
       ref={widgetRef}
       className="fixed z-[9999] w-[380px] max-w-[92vw]"
       style={{
-        left: position?.x ?? 16,
-        top: position?.y ?? 16,
+        right: position?.x === 0 ? 8 : Math.max(8, position?.x ?? 8),
+        bottom: position?.y === 0 ? 20 : Math.max(20, position?.y ?? 20),
       }}
     >
       <div className="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-xl shadow-2xl overflow-hidden">
