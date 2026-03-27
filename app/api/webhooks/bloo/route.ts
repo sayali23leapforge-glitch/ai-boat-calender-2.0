@@ -508,16 +508,20 @@ function fallbackIntent(text: string): Intent {
 }
 
 // ─── SEND BLOO ────────────────────────────────────────────────────────────────
-async function sendBloo(toPhone: string, message: string, fromBlooNumber?: string | null): Promise<void> {
+async function sendBloo(toPhone: string, message: string, fromBlooNumber?: string | null, protocol?: string | null): Promise<void> {
   const key = process.env.BLOO_API_KEY;
   if (!key) { console.log("[Webhook] BLOO_API_KEY not set — cannot send reply"); return; }
   const phone = normalizePhone(toPhone);
-  console.log(`[Webhook] SEND→${phone} (from=${fromBlooNumber ?? 'default'}): "${message.slice(0, 80)}"`);
+  console.log(`[Webhook] SEND→${phone} (from=${fromBlooNumber ?? 'default'}, protocol=${protocol ?? 'default'}): "${message.slice(0, 80)}"`);
   try {
-    // Include the sending number so Bloo knows which channel/device to use
+    // Include the sending number and protocol so Bloo knows which channel/device to use
     const payload: Record<string, string> = { text: message };
     if (fromBlooNumber) {
       payload.number = normalizePhone(fromBlooNumber);
+    }
+    // Send via same protocol as incoming message (iMessage → iMessage, SMS → SMS)
+    if (protocol && protocol.toLowerCase() === 'imessage') {
+      payload.protocol = 'imessage';
     }
     const res = await fetch(
       `https://backend.blooio.com/v2/api/chats/${encodeURIComponent(phone)}/messages`,
@@ -578,6 +582,7 @@ export async function POST(req: NextRequest) {
     let text = extractText(payload);
     const senderPhone = extractSenderPhone(payload);  // external_id → reply TO this
     const blooNumber = extractBlooNumber(payload);    // internal_id → identifies WHICH user
+    const protocol = String(payload.protocol ?? '').toLowerCase();  // imessage or sms
     let audioUrl: string | null = null;
     let imageUrl: string | null = null;
     let imageData: { title: string; description: string; date?: string; time?: string; type?: "task" | "goal" | "event" } | null = null;
@@ -663,7 +668,7 @@ export async function POST(req: NextRequest) {
 
     if (dbErr) {
       console.error("[Webhook] DB error:", dbErr.message);
-      sendBloo(replyTo, "⚠️ Oops! I'm having trouble connecting. Please try again in a moment! 🔄", blooNumber).catch(e => console.error("[Webhook] Send error:", e?.message));
+      sendBloo(replyTo, "⚠️ Oops! I'm having trouble connecting. Please try again in a moment! 🔄", blooNumber, protocol).catch(e => console.error("[Webhook] Send error:", e?.message));
       return NextResponse.json({ ok: true }, { status: 200 });
     }
     console.log(`[Webhook] Searching ${allProfiles?.length ?? 0} profiles | blooNumber=${blooNumber} | senderPhone=${senderPhone}`);
@@ -703,7 +708,8 @@ export async function POST(req: NextRequest) {
       await sendBloo(
         replyTo,
         "👋 Hi! I'm Cal, your calendar assistant. 📱\n\nI couldn't recognize your account. Please:\n\n1. Open the Calendar app\n2. Go to Settings ⚙️\n3. Save your:\n   📞 Personal phone: +919920261793\n   📲 Bloo bound number: +1(626)742-3142\n\nThen message me again and I'll create tasks, events, and goals for you! 🚀",
-        blooNumber
+        blooNumber,
+        protocol
       );
       return NextResponse.json({ ok: true }, { status: 200 });
     }
@@ -823,19 +829,19 @@ export async function POST(req: NextRequest) {
 
     // 8. SEND RESPONSE BASED ON DB SUCCESS (await these so confirmation is sent before webhook returns)
     if (finalIntent.type === "task" && dbSuccess) {
-      await sendBloo(replyTo, `✅ Task created: "${finalIntent.title}"`, blooNumber);
+      await sendBloo(replyTo, `✅ Task created: "${finalIntent.title}"`, blooNumber, protocol);
     } else if (finalIntent.type === "goal" && dbSuccess) {
-      await sendBloo(replyTo, `🎯 Goal set: "${finalIntent.title}"`, blooNumber);
+      await sendBloo(replyTo, `🎯 Goal set: "${finalIntent.title}"`, blooNumber, protocol);
     } else if (finalIntent.type === "event" && dbSuccess) {
       if (finalIntent.date) {
         const dateStr = finalIntent.time ? `${finalIntent.date} at ${finalIntent.time}` : finalIntent.date;
-        await sendBloo(replyTo, `📅 Event added: "${finalIntent.title}" — ${dateStr}`, blooNumber);
+        await sendBloo(replyTo, `📅 Event added: "${finalIntent.title}" — ${dateStr}`, blooNumber, protocol);
       } else {
-        await sendBloo(replyTo, `✅ Added: "${finalIntent.title}" (include a date like "tomorrow" or "Friday" to create a calendar event)`, blooNumber);
+        await sendBloo(replyTo, `✅ Added: "${finalIntent.title}" (include a date like "tomorrow" or "Friday" to create a calendar event)`, blooNumber, protocol);
       }
     } else if (dbError) {
       // DB failed - send error
-      await sendBloo(replyTo, `❌ Error: ${dbError.slice(0, 60)}. Please try again.`, blooNumber);
+      await sendBloo(replyTo, `❌ Error: ${dbError.slice(0, 60)}. Please try again.`, blooNumber, protocol);
     } else {
       // Conversational response - no DB involved (greetings, questions, etc.)
       // Distinguish between short greetings vs longer casual questions
@@ -855,7 +861,7 @@ export async function POST(req: NextRequest) {
         response = "Hey there! 👋 I'm Cal, your calendar assistant! 📱\n\n😊 That's a great question!\n\nWhat would you like to create today?\n\n📝 **TASK** - \"Buy groceries\" or \"Call mom\"\n📅 **EVENT** - \"Meeting tomorrow at 2pm\" or \"Dinner Friday 7pm\"\n🎯 **GOAL** - \"Learn guitar daily\" or \"Exercise 3x week\"\n\nOr just chat with me! 💬";
       }
       
-      await sendBloo(replyTo, response, blooNumber);
+      await sendBloo(replyTo, response, blooNumber, protocol);
     }
 
     // 9. BACKGROUND: Refine with Gemini if needed (doesn't block response)
@@ -894,7 +900,7 @@ Generate a 4-6 line friendly response with examples for each type!`
             const r = res.response.text().trim();
             if (r && r.length > 30) {
               // Send improved conversational response
-              sendBloo(replyTo, r, blooNumber);
+              sendBloo(replyTo, r, blooNumber, protocol);
             }
           }
         }
