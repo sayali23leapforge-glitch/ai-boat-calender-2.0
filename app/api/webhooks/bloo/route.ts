@@ -286,10 +286,48 @@ Return ONLY the JSON object, nothing else - no markdown, no extra text.`
 // ─── AI INTENT ────────────────────────────────────────────────────────────────
 type Intent = { type: "task" | "goal" | "event" | null; title: string; date: string | null; time: string | null };
 
+// Check if message is purely conversational (not actionable)
+function isConversational(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  
+  // Exact matches or very short greetings
+  if (/^(hi|hey|hello|thanks|thanks much|thanx|ok|okay|cool|good|yeah|sure|yes|no|right|lol|haha|awesome|nice|great|wonderful)$/i.test(lower)) {
+    return true;
+  }
+  
+  // Questions (ending with ?)
+  if (/\?$/.test(lower)) {
+    return true;
+  }
+  
+  // Common greetings and pleasantries
+  if (/\b(how are you|how are you doing|what's up|sup|yo|what's new|how's it|tell me|what time|what date|hello there|hey there|good morning|good evening|good night)\b/i.test(lower)) {
+    return true;
+  }
+  
+  // Chat-related phrases (the main issue!)
+  if (/\b(chat with|chat with me|chat with you|talk to me|talk to you|just chat|just talk|let's chat|let's talk|keep talking|keep chatting|converse|conversation)\b/i.test(lower)) {
+    return true;
+  }
+  
+  // Responses to bot suggestions
+  if (/\b(or just|just like you suggested|sounds good|i'll try|let me think)\b/i.test(lower)) {
+    return true;
+  }
+  
+  return false;
+}
+
 // Extract actionable intent from conversational messages
 async function extractActionableIntent(text: string): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return text;
+
+  // Skip extraction for clearly conversational messages
+  if (isConversational(text)) {
+    console.log("[Webhook] 💬 Skipping extraction - message is conversational");
+    return text;
+  }
 
   try {
     const genAI = new GoogleGenerativeAI(apiKey);
@@ -373,10 +411,8 @@ function fallbackIntent(text: string): Intent {
   const { today, tomorrow } = getTodayTomorrow();
   const lower = text.toLowerCase().trim();
   
-  // CONVERSATIONAL: Questions, greetings, acknowledgments
-  if (/^(hi|hey|hello|thanks|thanx|ok|okay|cool|good|yeah|sure|yes|no|right|lol|haha|awesome|nice)$/i.test(lower)
-    || /\?$/.test(lower.trim())  // Ends with ? → question
-    || /\b(how are you|how are you doing|what's up|sup|yo|what's new|how's it|tell me|what time|what date|hello there|hey there)\b/i.test(lower)) {
+  // CONVERSATIONAL: Use the same detection logic
+  if (isConversational(text)) {
     return { type: null, title: text, date: null, time: null };  // Conversational
   }
   
