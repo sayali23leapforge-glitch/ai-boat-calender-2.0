@@ -344,8 +344,12 @@ Rules:
 1. Remove ALL narrative/story context ("I saw", "I was", "I think", "I'm feeling")
 2. Remove ALL small talk ("how are you", "thanks", "okay", questions for info)
 3. Remove ALL filler words and conversational phrases
-4. Extract ONLY concrete actions: tasks (do/buy/call/schedule), events (meetings/appointments), goals (habits/learning)
-5. Include relevant context: dates, times, locations, but ONLY if they're actionable
+4. Extract ONLY concrete actions: tasks (do/buy/call), events (meetings/appointments with time), goals (habits/learning)
+5. VERY IMPORTANT: Keep dates and times with meetings/appointments/dinners/appointments/calls!
+   - "meeting tomorrow at 2 pm" → keep as "meeting tomorrow at 2 pm"
+   - "dentist Friday" → keep as "dentist Friday"
+   - "call mom" → "call mom" (no redundant date needed)
+   - "lunch Friday 1pm" → keep as "lunch Friday 1pm"
 6. If multiple actions exist, combine them into one concise statement
 7. Keep under 20 words
 8. Return ONLY the cleaned actionable text, NOTHING else
@@ -355,7 +359,8 @@ Examples:
 - "So I saw this guy wearing a watch and honestly I want to buy a watch too" → "buy a watch"
 - "I'm so busy, I finished my project, and now I need to update the spreadsheet and then schedule a meeting with Sarah on Friday" → "update spreadsheet, schedule meeting with Sarah Friday"
 - "Hi, just wanted to chat but also I have a dentist appointment next Tuesday at 2pm" → "dentist appointment Tuesday 2pm"
-- "Hey, what's up? Nothing much, just need to go grocery shopping" → "grocery shopping"
+- "meeting tomorrow at 2pm" → "meeting tomorrow at 2pm"
+- "Morning jog tomorrow 6am" → "morning jog tomorrow 6am"
 
 Cleaned intent:`
         }]
@@ -413,7 +418,7 @@ async function analyzeIntent(text: string): Promise<Intent> {
         contents: [{
           role: "user",
           parts: [{
-            text: `Classify this message. Return ONLY valid JSON, no markdown, no extra text.\n\nMessage: "${cleanedText}"\n\nJSON format:\n{"type":"task","title":"concise title","date":null,"time":null}\n\ntype values:\n- "task" = action to do (buy anything, call someone, fix something, any todo)\n- "goal" = habit or learning (learn piano, exercise daily, lose weight)\n- "event" = specific date/time meeting (meeting tomorrow 3pm, dentist Friday)\n- null = pure conversation/question (hi, how are you, what time is it)\n\nToday=${today}, Tomorrow=${tomorrow}`
+            text: `Classify this message. Return ONLY valid JSON, no markdown, no extra text.\n\nMessage: "${cleanedText}"\n\nJSON format:\n{"type":"event","title":"concise title","date":"YYYY-MM-DD","time":"HH:MM"}\n\nClassification rules:\n- "event" = meetings, appointments, calls, plans with SPECIFIC DATE/TIME (meeting tomorrow 2pm, dentist Friday, call Sarah at 3pm, dinner tonight 7pm)\n- "task" = actions without specific date/time (buy milk, call mom, fix bug, clean room)\n- "goal" = habits or learning goals (learn piano daily, exercise 3x week, practice guitar)\n- null = pure conversation (hi, how are you, thanks, what time is it)\n\nKEY: If message mentions:\n- meeting, appointment, dentist, doctor, call, dinner, lunch, breakfast → ALWAYS "event" if it has a date/time\n- tomorrow, today, specific date, specific time (2pm, 3:30am) → This makes it an "event"\n\nToday=${today}, Tomorrow=${tomorrow}\n\nAlways extract the actual date/time from the message. Use ISO format for dates (YYYY-MM-DD) and 24-hour format for times (HH:MM).`
           }]
         }],
         generationConfig: { maxOutputTokens: 500, temperature: 0.1 },
