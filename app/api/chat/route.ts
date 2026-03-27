@@ -887,8 +887,9 @@ async function callGemini(
   imageAttachments?: Array<{ data: string; mimeType: string }>
 ) {
   // Use gemini-2.5-flash model with new API format
-  const systemMsg = messages.find(m => m.role === 'system')?.content || '';
-  const userMsg = messages.find(m => m.role === 'user')?.content || '';
+  const systemMsg = messages.find(m => m.role === "system")?.content || "";
+  const userMsg =
+    [...messages].reverse().find((m) => m.role === "user")?.content || "";
 
   const fullPrompt = systemMsg ? `${systemMsg}\n\n${userMsg}` : userMsg;
 
@@ -939,7 +940,9 @@ function isObviouslyNonActionable(text: string): boolean {
   // Pattern covers greetings, pleasantries, single-word acks, and filler phrases
   const PATTERN =
     /^(hi+|hello+|hey+|yo+|howdy|good\s+(morning|afternoon|evening|night|day)|thanks+|thank\s+you|ty|thx|ok+|okay|k|sure|got\s+it|sounds\s+good|yep+|yup+|nope|nah|bye+|goodbye|see\s+ya|cya|cool+|great+|awesome+|perfect+|nice+|wow+|lol+|haha+|hehe+|👍|✅|🙏)[\s!?.🙂😊]*$/i;
-  return PATTERN.test(t);
+  const CHAT_PATTERN =
+    /^(what'?s\s+up|wassup|sup|how\s+are\s+you|how'?s\s+it\s+going|how'?s\s+your\s+day|what'?s\s+new|tell\s+me\s+something|you\s+there)[\s!?.🙂😊]*$/i;
+  return PATTERN.test(t) || CHAT_PATTERN.test(t);
 }
 
 // ===========================
@@ -1487,15 +1490,16 @@ Year inference: if only month+day given (no year), use ${new Date().getFullYear(
 
       // Planner had no specific reply — fall back to a lightweight Gemini call
       // for greetings, casual chat, and open-ended questions.
-      const conversationSystem = `You are a friendly, helpful AI assistant. The user is chatting with you for conversation, information, or clarification.
+      const conversationSystem = `You are a friendly chat assistant inside a productivity app.
 
-Respond naturally and conversationally. Be brief, friendly, and helpful.
-- For greetings: return a warm greeting back
-- For questions: answer helpfully if you can
-- For casual chatter: engage naturally
-- For clarifications: provide clear explanations
-
-Keep responses concise (1-2 sentences usually).`;
+Style rules:
+- Sound natural and human, like WhatsApp chat.
+- Keep it short: 1-2 sentences, ideally under 25 words.
+- Never write long paragraphs, bullet lists, or essays.
+- For greetings/casual chat, reply warm and light.
+- For factual questions, answer directly in plain words.
+- If user hints at planning/scheduling, gently offer to add it as a task/event.
+`;
 
       const conversationResp = await callGemini(geminiApiKey, [
         { role: "system", content: conversationSystem },
