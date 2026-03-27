@@ -719,7 +719,7 @@ export async function POST(req: NextRequest) {
     console.log("[Webhook] Quick Intent (AI-analyzed):", JSON.stringify(quickIntent));
 
     // Determine source (already extracted audioUrl/imageUrl above)
-    const source = imageUrl ? "📸 iMessage Image" : audioUrl ? "🎙️ iMessage Voice" : "📱 iMessage Text";
+    const sourceType = imageUrl ? "image" : audioUrl ? "voice" : "text";
 
     // 7. CREATE DB ENTRY FIRST (verify it works before sending confirmation)
     let dbSuccess = false;
@@ -727,7 +727,7 @@ export async function POST(req: NextRequest) {
 
     // Merge image data into intent if available
     let finalIntent = { ...quickIntent };
-    let finalDescription = `${source}: "${text.slice(0, 80)}"`;
+    let finalDescription = `via Bloo (${sourceType})`;
     
     if (imageData) {
       // Prefer image title if it looks like a real event/task title (longer, not just user command)
@@ -746,7 +746,7 @@ export async function POST(req: NextRequest) {
       // Use image time (user can provide "tomorrow" for date + image for time)
       if (imageData.time) finalIntent.time = imageData.time;
       
-      if (imageData.description) finalDescription = `${source}: ${imageData.description}`;
+      // For image, just keep it as "via Bloo (image)" without adding description
     }
 
     try {
