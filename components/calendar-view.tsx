@@ -79,9 +79,13 @@ export function CalendarView({ userId }: CalendarViewProps) {
 
   useEffect(() => {
     if (!userId) return;
-    loadEvents();
     loadUserPreferences();
   }, [userId]);
+
+  useEffect(() => {
+    if (!userId) return;
+    loadEvents();
+  }, [userId, currentDate, refreshTrigger]);
 
   // Real-time subscription for calendar events (separate from data loading)
   useEffect(() => {
@@ -142,8 +146,23 @@ export function CalendarView({ userId }: CalendarViewProps) {
       setRefreshTrigger((prev) => prev + 1);
     };
 
+    const handleNavigate = (e: Event) => {
+      const date = (e as CustomEvent).detail?.date as string | undefined;
+      if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        // setCurrentDate triggers the loadEvents useEffect with the new window
+        setCurrentDate(new Date(date + "T12:00:00"));
+        // Also bump refreshTrigger so if currentDate was already at this date,
+        // loadEvents still re-runs to pick up newly created events
+        setRefreshTrigger((prev) => prev + 1);
+      }
+    };
+
     window.addEventListener("refreshCalendar", handleRefresh);
-    return () => window.removeEventListener("refreshCalendar", handleRefresh);
+    window.addEventListener("navigateCalendarToDate", handleNavigate);
+    return () => {
+      window.removeEventListener("refreshCalendar", handleRefresh);
+      window.removeEventListener("navigateCalendarToDate", handleNavigate);
+    };
   }, []);
 
   const loadUserPreferences = async () => {

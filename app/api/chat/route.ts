@@ -293,43 +293,6 @@ function extractFirstJsonObject(text: string): any | null {
   return null;
 }
 
-function isConversationOnlyMessage(message: string): boolean {
-  const msg = message.trim().toLowerCase();
-  
-  // Greetings and casual chat
-  if (/^(hi|hey|hello|howdy|yo|what's up|whatsup|sup|greetings)(\s|!|\?)?$/.test(msg)) return true;
-  if (/^(good morning|good afternoon|good evening|good night|good day)(\s|!)?/.test(msg)) return true;
-  
-  // Questions that are NOT about creation (asking for information/clarification)
-  const questionPatterns = [
-    /^(did you|have you|did i|can you|what did).*(\?)?$/,  // "did you create", "have you", etc.
-    /^(what|when|where|why|how).*(\?)?$/,  // "what", "when", etc. - ask for info
-    /^(tell me|explain|describe|clarify).*(\?)?$/,  // asking for explanation
-    /^(are you|is it|is there).*(\?)?$/,  // yes/no questions
-  ];
-  
-  if (questionPatterns.some(p => p.test(msg))) {
-    // But NOT if it's clearly asking to CREATE something
-    const creationKeywords = /^(create|make|add|set|schedule|plan|book|reserve|request)(\s|$)/;
-    if (!creationKeywords.test(msg)) return true;
-  }
-  
-  // Random chat or responses
-  if (/^(lol|haha|hahaha|nice|cool|awesome|thanks|thank you|no|yes|ok|okay|sure)(\s|!|\?)?$/.test(msg)) return true;
-  
-  // Keep-alive or filler messages
-  if (msg.length < 5) return true;  // Very short messages are likely not task creation
-  
-  return false;
-}
-
-// Helper to detect if message is requesting creation
-function isCreationRequest(message: string): boolean {
-  const msg = message.trim().toLowerCase();
-  const creationKeywords = /\b(create|make|add|set|schedule|plan|book|reserve|request|send|remind|new|build|organize|list|prepare)\b/;
-  return creationKeywords.test(msg);
-}
-
 // Helper to normalize time tokens
 function normalizeTimeTokens(input: string): string {
   let s = (input || "").trim();
@@ -419,13 +382,20 @@ function minutesToHHMM(mins: number): string {
 }
 
 function getYmdInTimeZone(timeZone: string, dateObj = new Date()): string {
-  const fmt = new Intl.DateTimeFormat("en-CA", {
+  const fmt = new Intl.DateTimeFormat("en-US", {
     timeZone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   });
-  return fmt.format(dateObj); // YYYY-MM-DD
+  const parts = fmt.formatToParts(dateObj);
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+  if (year && month && day) return `${year}-${month}-${day}`;
+  // Fallback (should rarely happen)
+  const iso = new Date(dateObj).toISOString().slice(0, 10);
+  return iso;
 }
 
 function addDaysYmd(ymd: string, days: number): string {
@@ -436,6 +406,60 @@ function addDaysYmd(ymd: string, days: number): string {
   const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(dt.getUTCDate()).padStart(2, "0");
   return `${yy}-${mm}-${dd}`;
+}
+
+function sanitizeTimeZone(input?: string | null): string | undefined {
+  const tz = String(input || "").trim();
+  if (!tz) return undefined;
+  try {
+    // Throws RangeError for invalid IANA timezones.
+    new Intl.DateTimeFormat("en-US", { timeZone: tz }).format(new Date());
+    return tz;
+  } catch {
+    return undefined;
+  }
+}
+
+function weekdayTokenToIndex(token: string): number | undefined {
+  const t = (token || "").trim().toLowerCase();
+  if (!t) return undefined;
+  if (t === "sunday" || t === "sun") return 0;
+  if (t === "monday" || t === "mon") return 1;
+  if (t === "tuesday" || t === "tue" || t === "tues") return 2;
+  if (t === "wednesday" || t === "wed") return 3;
+  if (t === "thursday" || t === "thu" || t === "thur" || t === "thurs") return 4;
+  if (t === "friday" || t === "fri") return 5;
+  if (t === "saturday" || t === "sat") return 6;
+  return undefined;
+}
+
+function ymdWeekdayIndex(ymd: string): number {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y || 1970, (m || 1) - 1, d || 1));
+  return dt.getUTCDay();
+}
+
+function resolveWeekdayExpressionToYmd(input: string, tz: string): string | undefined {
+  const s = String(input || "").trim().toLowerCase();
+  if (!s) return undefined;
+
+  const m = s.match(
+    /\b(?:(next|this)\s+)?(monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat|sunday|sun)\b/i
+  );
+  if (!m) return undefined;
+
+  const modifier = (m[1] || "").toLowerCase();
+  const target = weekdayTokenToIndex(m[2] || "");
+  if (target === undefined) return undefined;
+
+  const today = getYmdInTimeZone(tz);
+  const current = ymdWeekdayIndex(today);
+  let delta = (target - current + 7) % 7;
+
+  // "next Thursday" should always mean a future date, never today.
+  if (modifier === "next" && delta === 0) delta = 7;
+
+  return addDaysYmd(today, delta);
 }
 
 function overlap(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
@@ -539,7 +563,7 @@ function resolveDateToken(dateLike: any, tz: string): string | undefined {
   const today = getYmdInTimeZone(tz);
   if (raw === "today") return today;
   if (raw === "tomorrow") return addDaysYmd(today, 1);
-  return undefined;
+  return resolveWeekdayExpressionToYmd(raw, tz);
 }
 
 // ✅ extract date from user message if planner forgot to include it
@@ -548,6 +572,11 @@ function extractDateFromUserText(text: string, tz: string): string | undefined {
 
   const m = s.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if (m?.[1]) return m[1];
+
+  // Prefer explicit weekday references over generic words like "today"
+  // when both appear in the same sentence.
+  const weekdayDate = resolveWeekdayExpressionToYmd(s, tz);
+  if (weekdayDate) return weekdayDate;
 
   const today = getYmdInTimeZone(tz);
   if (/\btomorrow\b/.test(s)) return addDaysYmd(today, 1);
@@ -658,7 +687,14 @@ function extractTimeFromHistory(rawMessages: any[]): { time?: string; endTime?: 
 
 function isDateOnlyReply(text: string): boolean {
   const t = (text || "").trim().toLowerCase();
-  return t === "today" || t === "tomorrow" || /^\d{4}-\d{2}-\d{2}$/.test(t);
+  return (
+    t === "today" ||
+    t === "tomorrow" ||
+    /^\d{4}-\d{2}-\d{2}$/.test(t) ||
+    /\b(?:(next|this)\s+)?(monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat|sunday|sun)\b/i.test(
+      t
+    )
+  );
 }
 
 // ======================
@@ -918,12 +954,24 @@ type PlannerOutput = {
 // ===========================
 // OpenAI call helper
 // ===========================
-async function callGemini(geminiApiKey: string, messages: any[]) {
+async function callGemini(
+  geminiApiKey: string,
+  messages: any[],
+  imageAttachments?: Array<{ data: string; mimeType: string }>
+) {
   // Use gemini-2.5-flash model with new API format
-  const systemMsg = messages.find(m => m.role === 'system')?.content || '';
-  const userMsg = messages.find(m => m.role === 'user')?.content || '';
-  
+  const systemMsg = messages.find(m => m.role === "system")?.content || "";
+  const userMsg =
+    [...messages].reverse().find((m) => m.role === "user")?.content || "";
+
   const fullPrompt = systemMsg ? `${systemMsg}\n\n${userMsg}` : userMsg;
+
+  // Build parts array: image inline_data parts first, then the text prompt.
+  // Gemini Vision requires inline_data parts to precede the text part.
+  const imageParts = (imageAttachments || []).map(img => ({
+    inline_data: { mime_type: img.mimeType, data: img.data },
+  }));
+  const parts = [...imageParts, { text: fullPrompt }];
 
   const geminiResp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`, {
     method: "POST",
@@ -931,15 +979,7 @@ async function callGemini(geminiApiKey: string, messages: any[]) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      contents: [
-        {
-          parts: [
-            {
-              text: fullPrompt,
-            },
-          ],
-        },
-      ],
+      contents: [{ parts }],
     }),
   });
 
@@ -973,7 +1013,9 @@ function isObviouslyNonActionable(text: string): boolean {
   // Pattern covers greetings, pleasantries, single-word acks, and filler phrases
   const PATTERN =
     /^(hi+|hello+|hey+|yo+|howdy|good\s+(morning|afternoon|evening|night|day)|thanks+|thank\s+you|ty|thx|ok+|okay|k|sure|got\s+it|sounds\s+good|yep+|yup+|nope|nah|bye+|goodbye|see\s+ya|cya|cool+|great+|awesome+|perfect+|nice+|wow+|lol+|haha+|hehe+|👍|✅|🙏)[\s!?.🙂😊]*$/i;
-  return PATTERN.test(t);
+  const CHAT_PATTERN =
+    /^(what'?s\s+up|wassup|sup|how\s+are\s+you|how'?s\s+it\s+going|how'?s\s+your\s+day|what'?s\s+new|tell\s+me\s+something|you\s+there)[\s!?.🙂😊]*$/i;
+  return PATTERN.test(t) || CHAT_PATTERN.test(t);
 }
 
 // ===========================
@@ -1035,7 +1077,41 @@ export async function POST(req: NextRequest) {
 
     const rawMessages = Array.isArray(body?.messages) ? body.messages : [];
     const context = body?.context ?? {};
-    const tz: string = context?.timezone || "Asia/Kolkata";
+
+    // Download image URLs server-side and convert to base64 for Gemini Vision.
+    // The widget sends public Supabase Storage URLs instead of base64 payloads to
+    // avoid hitting the browser→API request body size limit.
+    const imageUrls: string[] = Array.isArray(body?.imageUrls) ? body.imageUrls : [];
+    let imageAttachments: Array<{ data: string; mimeType: string }> | undefined;
+    if (imageUrls.length > 0) {
+      const downloaded = await Promise.all(
+        imageUrls.map(async (url: string) => {
+          try {
+            const res = await fetch(url);
+            if (!res.ok) { console.warn(`[/api/chat] Image download failed: ${url}`); return null; }
+            const buffer = await res.arrayBuffer();
+            const rawType = res.headers.get('content-type')?.split(';')[0].trim() ?? '';
+            const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const;
+            type ValidMime = (typeof validTypes)[number];
+            const ext = url.split('?')[0].split('.').pop()?.toLowerCase();
+            const extMap: Record<string, ValidMime> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };
+            const mimeType: ValidMime = validTypes.includes(rawType as ValidMime)
+              ? rawType as ValidMime
+              : (ext && extMap[ext]) ? extMap[ext] : 'image/jpeg';
+            return { data: Buffer.from(buffer).toString('base64'), mimeType };
+          } catch (err) {
+            console.error(`[/api/chat] Failed to download image ${url}:`, err);
+            return null;
+          }
+        })
+      );
+      const valid = downloaded.filter(Boolean) as Array<{ data: string; mimeType: string }>;
+      if (valid.length > 0) imageAttachments = valid;
+    }
+    const tzFromContext = sanitizeTimeZone(context?.timezone);
+    const tzFromBody = sanitizeTimeZone(body?.timezone);
+    const tzFromHeader = sanitizeTimeZone(req.headers.get("x-timezone") || req.headers.get("timezone"));
+    const tz: string = tzFromContext || tzFromBody || tzFromHeader || "Asia/Kolkata";
     const pendingEventDraft: PendingEventDraft | null =
       context?.pendingEventDraft && typeof context.pendingEventDraft === "object"
         ? (context.pendingEventDraft as PendingEventDraft)
@@ -1050,6 +1126,12 @@ export async function POST(req: NextRequest) {
       fromBody: userIdFromBody, 
       bodyKeys: Object.keys(body || {}),
       bodyUserId: body?.userId 
+    });
+    console.log("[/api/chat] Timezone resolved:", {
+      tz,
+      fromContext: context?.timezone || null,
+      fromBody: body?.timezone || null,
+      fromHeader: req.headers.get("x-timezone") || req.headers.get("timezone") || null,
     });
 
     if (!rawMessages.length) {
@@ -1185,7 +1267,7 @@ export async function POST(req: NextRequest) {
       const greetResp = await callGemini(geminiApiKey, [
         { role: "system", content: "You are a friendly assistant. Reply naturally and briefly to the user's message. 1-2 sentences max." },
         { role: "user", content: lastUserText },
-      ]);
+      ], imageAttachments);
       const greetText = greetResp.data?.choices?.[0]?.message?.content || "Hey! How can I help?";
       return NextResponse.json({
         assistantText: greetText,
@@ -1312,8 +1394,8 @@ Before planning, ask yourself:
 
 ABSOLUTE DATE RULE:
 - For ANY event/task due date, output a real date string in YYYY-MM-DD
-- Convert words like "today" and "tomorrow" into YYYY-MM-DD
-- If user gives weekday without a clear date, ask a follow-up question instead of guessing
+- Convert words like "today", "tomorrow", and weekdays (e.g., "Thursday", "next Friday") into YYYY-MM-DD
+- Use the nearest upcoming occurrence in the user's timezone for weekday references
 
 TIME EXTRACTION FOR EVENTS:
 - ALWAYS look for time mentions in user message (e.g., "2pm", "14:00", "2:30 pm", "at 3")
@@ -1370,16 +1452,77 @@ Rules for items:
 - Output must be strict JSON (no code fences, no trailing commas)
 
 Timezone: ${tz}
+Today: ${getYmdInTimeZone(tz)} (THIS IS THE CURRENT DATE — use this year when resolving any relative date like "today", "tomorrow", "next week")
+Tomorrow: ${addDaysYmd(getYmdInTimeZone(tz), 1)}
 Now ISO: ${new Date().toISOString()}
 
 ${recentEntitiesBlock}
 ${durationHint}
+${imageAttachments && imageAttachments.length > 0 ? `
+=== IMAGE ATTACHED ===
+You can see the attached image(s) above. Read every title, date, time, and location visible.
+
+RULES — follow exactly based on what you find:
+
+A) EXACTLY ONE EVENT, date is unambiguous AND in the future (on or after today ${getYmdInTimeZone(tz)}):
+   → isConversationOnly=false, emit the event item directly. Do NOT ask.
+   Example: "Sarah's Birthday Bash, April 12 2026, 7 PM–11 PM, 42 Maple St"
+   → kind="event", title="Sarah's Birthday Bash", date="2026-04-12", time="19:00", endTime="23:00", location="42 Maple St"
+
+A2) EXACTLY ONE EVENT, but the date shown in the image is IN THE PAST (before today ${getYmdInTimeZone(tz)}):
+   → isConversationOnly=true, items=[]
+   → assistantText MUST include all event details AND ask about the year, so details survive in history.
+   Format (fill in real values from the image):
+   "The image shows:
+   📅 [Title] — [date from image], [time], [location]
+   That date has already passed. Did you mean [same month/day next year], or a different date?"
+
+B) TWO OR MORE DISTINCT EVENTS found in the image:
+   → isConversationOnly=true, items=[]
+   → assistantText must list every event, numbered, with date/time/location, then ask which to add.
+   Format:
+   "I found [N] events in this image:
+   1. [Title] — [Date], [Time], [Location]
+   2. [Title] — [Date], [Time], [Location]
+   ...
+   Which would you like to add to your calendar? Reply with numbers (e.g. \"1 and 3\") or \"all\"."
+
+C) DATE IS AMBIGUOUS (day+month only with no year, or format like M/D/YY that could be read two ways):
+   → isConversationOnly=true, items=[]
+   → assistantText MUST include ALL event details from the image AND ask about the date.
+   CRITICAL: Include the title, time, and location so they survive in conversation history and can be used when the user replies.
+   Format (fill in real values from the image):
+   "I found this event in the image:
+   📅 [Title] — [ambiguous date], [time], [location]
+   Is the date [interpretation A, e.g. March 4, 2026] or [interpretation B, e.g. April 3, 2026]?"
+
+D) NO EVENTS FOUND:
+   → isConversationOnly=true, items=[]
+   → Tell user nothing was detected and ask them to describe the event.
+
+Time conversion: "7:00 PM" → "19:00", "6:30 PM" → "18:30", "11:00 PM" → "23:00".
+Year inference: if only month+day given (no year), use ${new Date().getFullYear()} unless that date has already passed, then use ${new Date().getFullYear() + 1}.` : ''}
 `.trim();
 
+    // Include recent conversation history so follow-up replies like "Add events 1 and 3"
+    // can reference events the bot listed in its previous response.
+    const historyBlock = (rawMessages as any[]).slice(-11, -1)
+      .map((m: any) => {
+        const role = m?.role === "user" ? "User" : m?.role === "assistant" ? "Assistant" : null;
+        const content = typeof m?.content === "string" ? m.content.slice(0, 400) : null;
+        return role && content ? `${role}: ${content}` : null;
+      })
+      .filter(Boolean)
+      .join("\n\n");
+
+    const plannerSystemFinal = historyBlock
+      ? `${plannerSystem}\n\n=== RECENT CONVERSATION ===\n${historyBlock}`
+      : plannerSystem;
+
     const planner = await callGemini(geminiApiKey, [
-      { role: "system", content: plannerSystem }, 
+      { role: "system", content: plannerSystemFinal },
       ...contextMessages
-    ]);
+    ], imageAttachments);
 
     if (!planner.ok) {
       return NextResponse.json(
@@ -1412,23 +1555,38 @@ ${durationHint}
 
     // --- CONVERSATION-ONLY MESSAGE HANDLING ---
     if ((plan as any).isConversationOnly === true) {
+      const plannerText = (plan as any).assistantText as string | undefined;
+
+      // If the planner already composed a reply (e.g. event list, date clarification),
+      // use it directly — no second Gemini call needed.
+      if (plannerText && plannerText.trim().length > 0) {
+        console.log("[/api/chat] Using planner assistantText directly:", { rid, text: plannerText.substring(0, 100) });
+        return NextResponse.json({
+          assistantText: plannerText.trim(),
+          toolCalls: [],
+          requestId: rid,
+        } satisfies ChatApiResponse);
+      }
+
       console.log("[/api/chat] Detected conversation-only message, generating natural response");
-      
-      // Call Gemini to generate a conversational response (no creation actions)
-      const conversationSystem = `You are a friendly, helpful AI assistant. The user is chatting with you for conversation, information, or clarification.
 
-Respond naturally and conversationally. Be brief, friendly, and helpful.
-- For greetings: return a warm greeting back
-- For questions: answer helpfully if you can
-- For casual chatter: engage naturally
-- For clarifications: provide clear explanations
+      // Planner had no specific reply — fall back to a lightweight Gemini call
+      // for greetings, casual chat, and open-ended questions.
+      const conversationSystem = `You are a friendly chat assistant inside a productivity app.
 
-Keep responses concise (1-2 sentences usually).`;
+Style rules:
+- Sound natural and human, like WhatsApp chat.
+- Keep it short: 1-2 sentences, ideally under 25 words.
+- Never write long paragraphs, bullet lists, or essays.
+- For greetings/casual chat, reply warm and light.
+- For factual questions, answer directly in plain words.
+- If user hints at planning/scheduling, gently offer to add it as a task/event.
+`;
 
       const conversationResp = await callGemini(geminiApiKey, [
         { role: "system", content: conversationSystem },
         ...contextMessages
-      ]);
+      ], imageAttachments);
 
       if (!conversationResp.ok) {
         return NextResponse.json({
@@ -1656,9 +1814,10 @@ Keep responses concise (1-2 sentences usually).`;
       }
 
       if (item.kind === "task") {
+        const dateFromLatestUserText = extractDateFromUserText(lastUserText, tz);
         const resolvedDueDate =
+          dateFromLatestUserText ||
           resolveDateToken((item as any).dueDate, tz) ||
-          extractDateFromUserText(lastUserText, tz) ||
           undefined;
         const resolvedDueTime =
           normalizeHHMM((item as any).dueTime || (item as any).time) ||
@@ -1700,9 +1859,10 @@ Keep responses concise (1-2 sentences usually).`;
 
       if (item.kind === "event") {
         // --- Date resolution ---
+        const dateFromLatestUserText = extractDateFromUserText(lastUserText, tz);
         const resolvedDate =
+          dateFromLatestUserText ||
           resolveDateToken((item as any).date, tz) ||
-          extractDateFromUserText(lastUserText, tz) ||
           (/^\d{4}-\d{2}-\d{2}$/.test(String((item as any).date || "")) ? String((item as any).date) : undefined);
 
         if (!resolvedDate) {
@@ -1792,7 +1952,9 @@ Keep responses concise (1-2 sentences usually).`;
       }
 
       if (item.kind === "update_event") {
+        const dateFromLatestUserText = extractDateFromUserText(lastUserText, tz);
         const resolvedDate =
+          dateFromLatestUserText ||
           resolveDateToken((item as any).date, tz) ||
           (/^\d{4}-\d{2}-\d{2}$/.test(String((item as any).date || "")) ? String((item as any).date) : undefined);
 
@@ -1831,14 +1993,23 @@ Keep responses concise (1-2 sentences usually).`;
       }
 
       if (item.kind === "update_task") {
+        const resolvedDueDate =
+          extractDateFromUserText(lastUserText, tz) ||
+          resolveDateToken((item as any).dueDate, tz) ||
+          (/^\d{4}-\d{2}-\d{2}$/.test(String((item as any).dueDate || "")) ? String((item as any).dueDate) : undefined);
+        const resolvedDueTime =
+          normalizeHHMM((item as any).dueTime || (item as any).time) ||
+          extractTimeFromUserText(lastUserText) ||
+          undefined;
+
         pushClient({
           name: "update_task_by_title",
           arguments: {
             titleQuery: item.titleQuery,
             title: item.title,
             notes: item.notes,
-            dueDate: item.dueDate,
-            dueTime: item.dueTime,
+            dueDate: resolvedDueDate,
+            dueTime: resolvedDueTime,
             priority: item.priority,
             estimatedHours: item.estimatedHours,
             location: item.location,
@@ -2033,6 +2204,13 @@ Keep responses concise (1-2 sentences usually).`;
         const date = resolveDateToken(proposed?.date, tz) || String(proposed?.date || "").trim();
         const startTime = normalizeHHMM(proposed?.startTime);
         const endTime = normalizeHHMM(proposed?.endTime);
+
+        // Never check conflicts for past dates — old deleted events would cause false positives
+        const today = getYmdInTimeZone(tz);
+        if (date < today) {
+          serverResults["conflicts"] = { ok: true, hasTime: false, conflicts: [], note: "Past date — no conflict check." };
+          continue;
+        }
 
         const events = await fetchEventsForRangeAdmin({ userId: uid, startDate: date, endDate: date });
 
@@ -2245,6 +2423,7 @@ Keep responses concise (1-2 sentences usually).`;
     }));
 
     // Server-side execution for non-interactive clients (e.g., Voice, iMessage)
+    // executeServerIntents already declared above at the pre-flight gate
     const serverActionsPerformed: string[] = [];
 
     if (executeServerIntents) {

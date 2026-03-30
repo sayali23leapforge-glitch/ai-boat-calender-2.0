@@ -518,6 +518,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const [iMessageConnected, setIMessageConnected] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const iMessageInitAttemptedRef = useRef(false);
 
   const [resolvedUserId, setResolvedUserId] = useState<string>(userId || "");
 
@@ -654,6 +655,10 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
   // Initialize iMessage integration (optional - app works without it)
   useEffect(() => {
+    // Prevent duplicate init in React StrictMode dev double-mount.
+    if (iMessageInitAttemptedRef.current) return;
+    iMessageInitAttemptedRef.current = true;
+
     // Check if BlueBubbles is configured
     const blueBubblesUrl = process.env.NEXT_PUBLIC_BLUEBUBBLES_BASE_URL;
     if (!blueBubblesUrl || blueBubblesUrl === '') {
@@ -995,19 +1000,18 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
           lastActiveView: "calendar",
         });
 
-        // Delay refresh to ensure API response is fully processed, then trigger calendar refresh
-        setTimeout(() => {
-          // Dispatch multiple times to ensure it's caught
-          window.dispatchEvent(new CustomEvent("refreshCalendar"));
-          window.dispatchEvent(new CustomEvent("refreshCalendar"));
-        }, 800);
-        
-        // Switch to calendar view after a slight delay
-        setTimeout(() => {
-          onSetActiveView("calendar");
-        }, 1000);
+        // Switch to calendar view first so the component mounts and its event listeners are active
+        onSetActiveView("calendar");
 
-        pendingEventDraftRef.current = null;
+        // After calendar is mounted, navigate to the event date (handles far-future dates)
+        // then refresh to load events in the new window
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("navigateCalendarToDate", { detail: { date: a.date } }));
+        }, 300);
+
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("refreshCalendar"));
+        }, 700);
       } catch (e: any) {
         console.error("create_event failed:", e);
         toast.error(e?.message ?? "Failed to create event");
@@ -1636,27 +1640,30 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
     setAttachedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  // Upload files to storage and create records
-  const uploadFiles = async (files: File[]) => {
-    const uploadPromises = files.map(async (file) => {
+  // Upload files to storage, return public URLs for any image files.
+  // URLs are used by the chat API to download images server-side for Gemini Vision —
+  // avoids sending large base64 payloads through the browser request body.
+  const uploadFiles = async (files: File[]): Promise<string[]> => {
+    const imageUrls: string[] = [];
+
+    await Promise.all(files.map(async (file) => {
       try {
-        const document = await uploadDocument(file, resolvedUserId || userId);
+        const result = await uploadDocument(file, resolvedUserId || userId);
         const isImage = file.type.startsWith('image/');
         toast.success(`${isImage ? 'Image' : 'Document'} uploaded: ${file.name}`);
-        return document;
+        if (isImage && result?.publicUrl) {
+          imageUrls.push(result.publicUrl);
+        }
       } catch (error) {
         console.error('Upload error:', error);
         toast.error(`Failed to upload ${file.name}`);
-        return null;
       }
-    });
+    }));
 
-    await Promise.all(uploadPromises);
-    
-    // Notify parent to refresh upload section
     if (onFileUploaded) {
       onFileUploaded();
     }
+    return imageUrls;
   };
 
   async function send(messageText?: string) {
@@ -1678,25 +1685,36 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
     const requestId = makeRequestId();
 
-    // Upload files first if any
+    // Upload files first, collecting public URLs for any images.
+    // The chat API will download from these URLs server-side for Gemini Vision —
+    // this avoids large base64 payloads in the browser→API request body.
+    let imageUrls: string[] = [];
     if (hasFiles) {
       setLoading(true);
-      await uploadFiles(attachedFiles);
+      imageUrls = await uploadFiles(attachedFiles);
       setAttachedFiles([]);
-      
-      // If no text, just show upload confirmation
-      if (!text) {
-        setLoading(false);
-        return;
-      }
+    }
+
+    // When the user sends only an image with no text, supply a default prompt so
+    // Gemini describes the image rather than returning nothing.
+    const effectiveText = text || (imageUrls.length > 0
+      ? "Look at this image and create calendar events or tasks for anything you find in it. Extract the title, date, time, and location from the image and add them to my calendar."
+      : "");
+
+    if (!effectiveText) {
+      setLoading(false);
+      return;
     }
 
     // ✅ store last user text BEFORE we clear input (used by tool execution for duration/date)
-    lastSentUserTextRef.current = text;
+    lastSentUserTextRef.current = effectiveText;
 
     // Only add to chat if not from iMessage (to avoid duplicates)
     if (!messageText) {
-      setChat((prev) => [...prev, { role: "user", content: text }]);
+      setChat((prev) => [
+        ...prev,
+        { role: "user", content: text || "📎 Image attached" },
+      ]);
     }
     setInput("");
     setLoading(true);
@@ -1729,7 +1747,9 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
         body: JSON.stringify({
           requestId,
           userId: uid,
-          messages: [...apiMessages, { role: "user", content: text }],
+          messages: [...apiMessages, { role: "user", content: effectiveText }],
+          // Send public Supabase Storage URLs; the API route downloads them server-side
+          imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
           context: {
             timezone: tz,
             recentEntities,
