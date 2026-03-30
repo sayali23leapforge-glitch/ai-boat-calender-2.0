@@ -1,50 +1,36 @@
 /**
- * API endpoint for iOS Control Center Voice Shortcut
- * Receives voice recording, transcribes, creates task/event/goal
+ * Simplified API endpoint for iOS Voice Shortcut
+ * Accepts transcribed text directly (not audio file)
+ * Creates task/event/goal from the text
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { supabase } from '@/lib/supabase';
 
 export async function POST(req: NextRequest) {
   try {
-    const formData = await req.formData();
-    const audioFile = formData.get('audio') as File;
-    const userId = formData.get('userId') as string;
+    const body = await req.json();
+    const { text, userId } = body;
 
-    if (!audioFile || !userId) {
+    if (!text || !userId) {
       return NextResponse.json(
-        { error: 'Missing audio file or user ID' },
+        { error: 'Missing text or user ID', success: false },
         { status: 400 }
       );
     }
 
-    if (!process.env.OPENAI_API_KEY || !process.env.GOOGLE_API_KEY) {
+    if (!process.env.GOOGLE_API_KEY) {
       return NextResponse.json(
-        { error: 'Missing API configuration' },
+        { error: 'Missing API configuration', success: false },
         { status: 500 }
       );
     }
 
-    console.log('[Voice Create] 🎤 Processing voice from user:', userId);
+    console.log('[Voice Create] 🎤 Processing voice text from user:', userId);
+    console.log('[Voice Create] 📝 Text:', text);
 
-    // Step 1: Transcribe audio using OpenAI Whisper
-    const openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
-
-    const transcription = await openai.audio.transcriptions.create({
-      file: audioFile,
-      model: 'whisper-1',
-      language: 'en',
-    });
-
-    const transcript = transcription.text.trim();
-    console.log('[Voice Create] 📝 Transcript:', transcript);
-
-    // Step 2: Use Gemini to classify intent and extract details
+    // Use Gemini to classify intent and extract details
     const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
@@ -68,7 +54,7 @@ Rules:
 - Title should be short and actionable (2-5 words)
 - Strip filler words, return only the core intent
 
-Voice message: "${transcript.replace(/"/g, "'")}"`;
+Voice message: "${text.replace(/"/g, "'")}"`;
 
     const result = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: intentPrompt }] }],
@@ -81,14 +67,13 @@ Voice message: "${transcript.replace(/"/g, "'")}"`;
     // Parse JSON response
     let parsed;
     try {
-      // Extract JSON from response (it might have extra text)
       const jsonMatch = intentText.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('No JSON found in response');
       parsed = JSON.parse(jsonMatch[0]);
     } catch (e) {
       console.error('[Voice Create] ❌ Failed to parse intent:', e);
       return NextResponse.json(
-        { error: 'Failed to understand voice message' },
+        { error: 'Failed to understand voice message', success: false },
         { status: 400 }
       );
     }
@@ -97,14 +82,14 @@ Voice message: "${transcript.replace(/"/g, "'")}"`;
 
     if (!title) {
       return NextResponse.json(
-        { error: 'Could not extract title from voice message' },
+        { error: 'Could not extract title from voice message', success: false },
         { status: 400 }
       );
     }
 
     console.log('[Voice Create] ✅ Parsed:', { type, title, dueDate, dueTime });
 
-    // Step 3: Create in database based on type
+    // Create in database based on type
     if (type === 'TASK') {
       const { error } = await supabase.from('tasks').insert({
         user_id: userId,
@@ -120,7 +105,7 @@ Voice message: "${transcript.replace(/"/g, "'")}"`;
       if (error) {
         console.error('[Voice Create] ❌ Task creation error:', error);
         return NextResponse.json(
-          { error: 'Failed to create task' },
+          { error: 'Failed to create task', success: false },
           { status: 500 }
         );
       }
@@ -131,7 +116,7 @@ Voice message: "${transcript.replace(/"/g, "'")}"`;
         type: 'TASK',
         title,
         dueDate,
-        message: `Task created: ${title}`,
+        message: `✅ Task created: ${title}`,
       });
     } else if (type === 'EVENT') {
       const { error } = await supabase.from('calendar_events').insert({
@@ -149,7 +134,7 @@ Voice message: "${transcript.replace(/"/g, "'")}"`;
       if (error) {
         console.error('[Voice Create] ❌ Event creation error:', error);
         return NextResponse.json(
-          { error: 'Failed to create event' },
+          { error: 'Failed to create event', success: false },
           { status: 500 }
         );
       }
@@ -161,7 +146,7 @@ Voice message: "${transcript.replace(/"/g, "'")}"`;
         title,
         dueDate,
         dueTime,
-        message: `Event created: ${title}`,
+        message: `✅ Event created: ${title}`,
       });
     } else if (type === 'GOAL') {
       const { error } = await supabase.from('goals').insert({
@@ -177,7 +162,7 @@ Voice message: "${transcript.replace(/"/g, "'")}"`;
       if (error) {
         console.error('[Voice Create] ❌ Goal creation error:', error);
         return NextResponse.json(
-          { error: 'Failed to create goal' },
+          { error: 'Failed to create goal', success: false },
           { status: 500 }
         );
       }
@@ -187,18 +172,18 @@ Voice message: "${transcript.replace(/"/g, "'")}"`;
         success: true,
         type: 'GOAL',
         title,
-        message: `Goal created: ${title}`,
+        message: `✅ Goal created: ${title}`,
       });
     } else {
       return NextResponse.json(
-        { error: 'Unknown type: ' + type },
+        { error: 'Unknown type: ' + type, success: false },
         { status: 400 }
       );
     }
   } catch (error: any) {
     console.error('[Voice Create] ❌ Error:', error?.message);
     return NextResponse.json(
-      { error: 'Voice processing failed', details: error?.message },
+      { error: 'Voice processing failed', details: error?.message, success: false },
       { status: 500 }
     );
   }
