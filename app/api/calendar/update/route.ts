@@ -8,7 +8,7 @@ export async function POST(req: NextRequest) {
     const eventId: string | undefined = body?.eventId;
     const updates = body?.updates ?? null;
 
-    if (!eventId || !updates || typeof updates !== "object") {
+    if (!eventId || !updates || typeof updates !== "object" || Object.keys(updates).length === 0) {
       return NextResponse.json({ error: "Missing eventId or updates" }, { status: 400 });
     }
 

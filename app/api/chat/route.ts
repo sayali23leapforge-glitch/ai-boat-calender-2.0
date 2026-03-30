@@ -957,30 +957,61 @@ type PlannerOutput = {
 async function callGemini(
   geminiApiKey: string,
   messages: any[],
-  imageAttachments?: Array<{ data: string; mimeType: string }>
+  imageAttachments?: Array<{ data: string; mimeType: string }>,
+  options?: { jsonMode?: boolean }
 ) {
-  // Use gemini-2.5-flash model with new API format
-  const systemMsg = messages.find(m => m.role === "system")?.content || "";
-  const userMsg =
-    [...messages].reverse().find((m) => m.role === "user")?.content || "";
+  const systemMsg = messages.find((m: any) => m.role === "system")?.content || "";
 
-  const fullPrompt = systemMsg ? `${systemMsg}\n\n${userMsg}` : userMsg;
+  // Build proper multi-turn conversation from non-system messages.
+  // Gemini requires roles to strictly alternate between "user" and "model".
+  const nonSystem = messages.filter((m: any) => m.role !== "system");
 
-  // Build parts array: image inline_data parts first, then the text prompt.
-  // Gemini Vision requires inline_data parts to precede the text part.
-  const imageParts = (imageAttachments || []).map(img => ({
-    inline_data: { mime_type: img.mimeType, data: img.data },
-  }));
-  const parts = [...imageParts, { text: fullPrompt }];
+  // Merge consecutive same-role messages so the sequence always alternates.
+  const normalized: Array<{ role: string; content: string }> = [];
+  for (const m of nonSystem) {
+    const role = m.role === "assistant" ? "model" : "user";
+    const text = typeof m.content === "string" ? m.content : "";
+    if (normalized.length > 0 && normalized[normalized.length - 1].role === role) {
+      // Merge into the previous turn to keep alternation valid.
+      normalized[normalized.length - 1].content += "\n" + text;
+    } else {
+      normalized.push({ role, content: text });
+    }
+  }
+
+  // Gemini requires the final turn to be a "user" turn.
+  if (!normalized.length || normalized[normalized.length - 1].role !== "user") {
+    normalized.push({ role: "user", content: "" });
+  }
+
+  // Convert to Gemini contents format; attach images to the last user message only.
+  const contents = normalized.map((m, idx) => {
+    const isLast = idx === normalized.length - 1;
+    const parts: any[] = [];
+    if (isLast && m.role === "user" && imageAttachments?.length) {
+      // Gemini Vision requires inline_data parts before the text part.
+      parts.push(
+        ...imageAttachments.map((img) => ({
+          inline_data: { mime_type: img.mimeType, data: img.data },
+        }))
+      );
+    }
+    parts.push({ text: m.content });
+    return { role: m.role, parts };
+  });
+
+  const requestBody: Record<string, any> = { contents };
+  if (systemMsg) {
+    requestBody.system_instruction = { parts: [{ text: systemMsg }] };
+  }
+  if (options?.jsonMode) {
+    requestBody.generationConfig = { responseMimeType: "application/json" };
+  }
 
   const geminiResp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      contents: [{ parts }],
-    }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(requestBody),
   });
 
   if (!geminiResp.ok) {
@@ -990,17 +1021,12 @@ async function callGemini(
   }
 
   const data = await geminiResp.json();
-  // Transform Gemini response to OpenAI-like format
   const content = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  return { 
-    ok: true, 
-    status: 200, 
-    data: { 
-      choices: [{ 
-        message: { content } 
-      }] 
-    }, 
-    errText: "" 
+  return {
+    ok: true,
+    status: 200,
+    data: { choices: [{ message: { content } }] },
+    errText: "",
   };
 }
 
@@ -1307,11 +1333,18 @@ export async function POST(req: NextRequest) {
       // intentClass === "action" — proceed to Planner
     }
 
-    const contextMessages = rawMessages.slice(-10).map((m: any) => {
+    // Keep the last 6 messages (3 full turns) to provide conversation context without
+    // blowing up the Gemini context window. Each message is capped at 1,500 chars as a
+    // hard safety valve — real conversations average ~300 chars/turn.
+    const HISTORY_TURNS = 6;
+    const MSG_CHAR_CAP = 1500;
+    const contextMessages = rawMessages.slice(-HISTORY_TURNS).map((m: any) => {
       if (m?.role === "user" && typeof m?.content === "string") {
-        return { role: "user", content: normalizeUserTextForLLM(m.content) };
+        const normalized = normalizeUserTextForLLM(m.content);
+        return { role: "user", content: normalized.slice(0, MSG_CHAR_CAP) };
       }
-      return { role: m?.role, content: m?.content };
+      const content = typeof m?.content === "string" ? m.content.slice(0, MSG_CHAR_CAP) : (m?.content ?? "");
+      return { role: m?.role, content };
     });
 
     const durationFromText = parseDurationMinutesFromText(lastUserText);
@@ -1352,18 +1385,26 @@ CRITICAL: Return ONLY a valid JSON object:
 === INTENT CLASSIFICATION (MANDATORY FIRST STEP) ===
 Before emitting any items, you MUST classify the user's message.
 
+EXCEPTION — these are NEVER isConversationOnly=true, always set isConversationOnly=false and emit the appropriate item:
+- Any message asking about the user's calendar, agenda, schedule, or free time: "What's on my calendar today/tomorrow/this week?", "What do I have scheduled?", "Am I free on Friday?", "Show me my agenda", "When am I free?", "What's on my schedule this week?"
+- These MUST emit kind="query_agenda_v2" with the correct range field (see Rules for items below).
+- Example: "What's on my calendar this week?" => { kind: "query_agenda_v2", range: "this_week" }
+- Example: "What do I have today?" => { kind: "query_agenda_v2", range: "today" }
+- Example: "Show me tomorrow's schedule" => { kind: "query_agenda_v2", range: "tomorrow" }
+
 SET isConversationOnly=true AND items=[] for ALL of the following:
 - Greetings: "Hi", "Hello", "Hey", "Good morning", "Yo", "Howdy"
 - Pleasantries / acknowledgments: "Thanks", "Thank you", "OK", "Okay", "Sure", "Got it", "Sounds good", "Yep", "Yup", "Cool", "Great", "Awesome", "Perfect", "Nice"
-- Pure questions (no creation intent): "What is X?", "When is my meeting?", "Did you add that?", "How many tasks do I have?"
+- Pure factual questions (no data retrieval needed): "What is X?", "Did you add that?", "How are you?"
 - Filler / vague / unclear: "Hmm", "Interesting", "Ok then", any message ≤ 3 words that contains NO clear action verb or subject to create
 - Statements of fact with no request: "I had a dentist visit", "It's raining today"
 
-SET isConversationOnly=false ONLY when the message CLEARLY implies something to create or track:
+SET isConversationOnly=false ONLY when the message CLEARLY implies something to create, retrieve, or track:
 - Explicit creation: "Add a task for...", "Create an event...", "Schedule a meeting..."
 - Clear intent to track: "Remind me to...", "I need to...", "Don't forget to..."
 - Deliverable with deadline: "Submit the report by Friday", "Pay rent on the 1st"
 - Appointment being booked: "Meeting with John at 3pm tomorrow"
+- Calendar/agenda lookup: "What's on my calendar?", "Show my schedule", "Am I free tomorrow?"
 
 === AMBIGUOUS INTENT ===
 If you CANNOT confidently determine whether the user wants something created
@@ -1411,12 +1452,12 @@ PRIORITY EXTRACTION:
 - "low", "whenever" => priority: "low"
 - If no priority word mentioned, default to "medium"
 
-INTENT GATE — evaluate this BEFORE emitting any task/event/goal item:
+INTENT GATE — final check before emitting any task/event/goal:
 
 NEVER emit a task/event/goal if the message is any of:
 - A greeting or pleasantry: "Hi", "Hello", "Hey", "Good morning", "Thanks", "Thank you", "OK", "Okay", "Sure", "Yep", "Got it", "Sounds good", "No problem", "You're welcome"
 - A vague acknowledgment with no clear action: "Noted", "I see", "Interesting", "Makes sense"
-- A question asking for information (not requesting something to be tracked): "What's on my calendar?", "How many tasks do I have?"
+- A question asking for information (not requesting something to be tracked): "How many tasks do I have?", "What time is it?" — NOTE: calendar/agenda queries ("What's on my calendar?", "What do I have today?") are EXCEPTIONS and MUST emit query_agenda_v2
 - A short filler message: one or two words with no actionable content
 - Unclear or ambiguous messages where you cannot confidently identify WHAT needs to be done
 
@@ -1430,26 +1471,39 @@ WHEN INTENT IS AMBIGUOUS (a possible action is visible but the user may just be 
 - Respond ONLY with assistantText asking ONE clarifying question. Set items: [].
 - Use: "Did you want me to create a task for this, or were you just letting me know?"
 
-Examples applying the INTENT GATE:
-- "Hi" → assistantText: "Hey! How can I help you today?", items: []
-- "Thanks" → assistantText: "You're welcome!", items: []
-- "OK" → assistantText: "Got it!", items: []
-- "I had a meeting today" → assistantText: "Did you want me to log something from that meeting, or were you just letting me know?", items: []
-- "I should probably call the dentist" → assistantText: "Did you want me to create a task to call the dentist?", items: []
-- "Remind me to call the dentist tomorrow" → items: [{ kind: "task", title: "Call the dentist", dueDate: "YYYY-MM-DD" }]
-- "Add a task: finish the report by Friday" → items: [{ kind: "task", title: "Finish the report", dueDate: "YYYY-MM-DD" }]
+=== EXAMPLES ===
+- "Hi" → assistantText: "Hey! How can I help?", isConversationOnly: true, items: []
+- "Thanks" → assistantText: "You're welcome!", isConversationOnly: true, items: []
+- "OK" → assistantText: "Got it!", isConversationOnly: true, items: []
+- "I had a meeting today" → assistantText: "Did you want me to log something from that meeting, or were you just letting me know?", isConversationOnly: true, items: []
+- "I should probably call the dentist" → assistantText: "Did you want me to create a task to call the dentist?", isConversationOnly: true, items: []
+- "Remind me to call the dentist tomorrow" → isConversationOnly: false, items: [{ kind: "task", title: "Call the dentist", dueDate: "YYYY-MM-DD" }]
+- "Add a task: finish the report by Friday" → isConversationOnly: false, items: [{ kind: "task", title: "Finish the report", dueDate: "YYYY-MM-DD" }]
 
 Rules for items:
-- If user asks "agenda/calendar today/tomorrow/this week" => kind="query_agenda_v2"
-- If user asks "when am I free / available / free slots" => query_agenda_v2 with includeFreeSlots=true
+- If user asks about their calendar/agenda/schedule/events => kind="query_agenda_v2"
+  - "today" / "today's agenda" / "what's on today" => range="today"
+  - "tomorrow" / "tomorrow's schedule" => range="tomorrow"
+  - "this week" / "next 7 days" / "week" / "weekly" => range="this_week"
+  - specific date (e.g. "on Friday", "April 10") => range="date", date="YYYY-MM-DD"
+  - IMPORTANT: range MUST be one of exactly: "today", "tomorrow", "this_week", "date" — no other values
+- If user asks "when am I free / available / free slots" => query_agenda_v2 with includeFreeSlots=true, range="today" or "date"
 - If message contains multiple intents, emit multiple items
 - Goal/objective/target => kind="goal"
-- Meeting/appointment/event with date/time => kind="event" or update_event
+- Meeting/appointment/event with date/time => kind="event"
+- Update/reschedule/move an existing event => kind="update_event"
+- Delete/remove/cancel an existing event => kind="delete_event"
 - Task/to-do/action items => kind="task"
+- Update an existing task => kind="update_task"
+- Complete/done/finish an existing task => kind="complete_task"
+- Delete/remove an existing task => kind="delete_task"
+- Delete/remove an existing goal => kind="delete_goal"
 - Create task list => kind="create_task_list"
 - For tasks: infer listName from context (Work/Study/Health/Shopping/Personal)
 - Keep titles short; put details in notes/description
 - Output must be strict JSON (no code fences, no trailing commas)
+
+Delete/cancel intent keywords: "delete", "remove", "cancel", "get rid of", "clear", "erase" → ALWAYS use kind="delete_event" or kind="delete_task", never kind="update_event" or kind="update_task"
 
 Timezone: ${tz}
 Today: ${getYmdInTimeZone(tz)} (THIS IS THE CURRENT DATE — use this year when resolving any relative date like "today", "tomorrow", "next week")
@@ -1504,25 +1558,13 @@ Time conversion: "7:00 PM" → "19:00", "6:30 PM" → "18:30", "11:00 PM" → "2
 Year inference: if only month+day given (no year), use ${new Date().getFullYear()} unless that date has already passed, then use ${new Date().getFullYear() + 1}.` : ''}
 `.trim();
 
-    // Include recent conversation history so follow-up replies like "Add events 1 and 3"
-    // can reference events the bot listed in its previous response.
-    const historyBlock = (rawMessages as any[]).slice(-11, -1)
-      .map((m: any) => {
-        const role = m?.role === "user" ? "User" : m?.role === "assistant" ? "Assistant" : null;
-        const content = typeof m?.content === "string" ? m.content.slice(0, 400) : null;
-        return role && content ? `${role}: ${content}` : null;
-      })
-      .filter(Boolean)
-      .join("\n\n");
-
-    const plannerSystemFinal = historyBlock
-      ? `${plannerSystem}\n\n=== RECENT CONVERSATION ===\n${historyBlock}`
-      : plannerSystem;
-
+    // Conversation history is now passed as proper multi-turn contents via contextMessages.
+    // The historyBlock workaround (400-char truncated text injected into the system prompt)
+    // is no longer needed and has been removed.
     const planner = await callGemini(geminiApiKey, [
-      { role: "system", content: plannerSystemFinal },
+      { role: "system", content: plannerSystem },
       ...contextMessages
-    ], imageAttachments);
+    ], imageAttachments, { jsonMode: true });
 
     if (!planner.ok) {
       return NextResponse.json(
@@ -1572,15 +1614,21 @@ Year inference: if only month+day given (no year), use ${new Date().getFullYear(
 
       // Planner had no specific reply — fall back to a lightweight Gemini call
       // for greetings, casual chat, and open-ended questions.
-      const conversationSystem = `You are a friendly chat assistant inside a productivity app.
+      const conversationSystem = `You are Bloo, a friendly personal productivity assistant. The user is chatting casually — you do NOT need to create any tasks, events, or goals right now.
 
 Style rules:
-- Sound natural and human, like WhatsApp chat.
+- Sound natural and human, like a WhatsApp message from a helpful friend.
 - Keep it short: 1-2 sentences, ideally under 25 words.
-- Never write long paragraphs, bullet lists, or essays.
+- Never write long paragraphs, bullet lists, or markdown formatting.
 - For greetings/casual chat, reply warm and light.
 - For factual questions, answer directly in plain words.
-- If user hints at planning/scheduling, gently offer to add it as a task/event.
+- If the user hints at scheduling or planning, gently suggest: "Want me to add that as a task or event?"
+- Do not use emojis unless the user used them first.
+- Never say "As an AI" or refer to yourself as a language model.
+
+CRITICAL: You have NO access to the user's calendar, tasks, events, or any personal data.
+- NEVER say "Here's what I found on your calendar", "You have X events", or anything that implies you retrieved real data.
+- If the user asks about their calendar or schedule, say only: "I'll pull that up for you!" — the system will fetch the real data separately.
 `;
 
       const conversationResp = await callGemini(geminiApiKey, [
@@ -2025,11 +2073,21 @@ Style rules:
       }
 
       if (item.kind === "delete_task") {
+        const tq = String(item.titleQuery || "").trim();
+        if (isAmbiguousTitleQuery(tq) && !recentEntities?.lastTaskTitle) {
+          pendingFollowups.push("Which task did you want to delete? I don't have a recent one on record — could you tell me the name?");
+          continue;
+        }
         pushClient({ name: "delete_task_by_title", arguments: { titleQuery: item.titleQuery } });
         continue;
       }
 
       if (item.kind === "delete_event") {
+        const tq = String(item.titleQuery || "").trim();
+        if (isAmbiguousTitleQuery(tq) && !recentEntities?.lastEventTitle) {
+          pendingFollowups.push("Which event did you want to delete? I don't have a recent one on record — could you tell me the name?");
+          continue;
+        }
         pushClient({ name: "delete_event_by_title", arguments: { titleQuery: item.titleQuery } });
         continue;
       }
@@ -2108,7 +2166,7 @@ Style rules:
                   id: `${rid}:disambig_evt`,
                   name: "request_disambiguation",
                   arguments: {
-                    prompt: `I found multiple events matching “${titleQuery}”. Which one do you mean?`,
+                    prompt: `I found multiple events matching "${titleQuery}". Which one do you mean?`,
                     kind: "event",
                     choices,
                     pendingTool: firstEventAction,
@@ -2171,7 +2229,9 @@ Style rules:
           }
         }
 
+        console.log("[/api/chat] get_agenda_v2 query:", { uid, range, start, end, tz });
         const events = await fetchEventsForRangeAdmin({ userId: uid, startDate: start, endDate: end });
+        console.log("[/api/chat] get_agenda_v2 result:", { eventCount: events.length, firstEvent: events[0] || null });
 
         let slots: Array<{ start_time: string; end_time: string; reason: string }> = [];
         if (includeFreeSlots) {
@@ -2226,16 +2286,8 @@ Style rules:
 
         if (pStart !== null && pEnd !== null) {
           for (const e of events) {
-            if (!e.start_time || !e.end_time) {
-              conflicts.push({
-                id: e.id,
-                title: e.title,
-                start_time: e.start_time,
-                end_time: e.end_time,
-                reason: "All-day/untimed event",
-              });
-              continue;
-            }
+            // Only check timed events — all-day/untimed events do not block specific time slots
+            if (!e.start_time || !e.end_time) continue;
             const es = toMinutes(e.start_time.slice(0, 5));
             const ee = toMinutes(e.end_time.slice(0, 5));
             if (es === null || ee === null) continue;
@@ -2327,9 +2379,14 @@ Style rules:
         });
       }
 
+      const slotExample = slots[0]?.start_time ? `(e.g., "move it to ${slots[0].start_time}")` : "";
+      const slotsSection = slotLines
+        ? `\n\nSuggested open slots (${dur} min):\n${slotLines}\n\nReply with one of the suggested times ${slotExample}.`
+        : `\n\nNo open slots found in the 09:00–21:00 window for that day.`;
+
       return NextResponse.json({
         assistantText:
-          `That time conflicts with your calendar on ${date} (${startTime}${endTime ? `–${endTime}` : ""}).\n\nConflicts:\n${conflictLines}\n\nSuggested open slots (${dur} min):\n${slotLines}\n\nReply with one of the suggested times (e.g., “move it to ${slots[0]?.start_time}”).`,
+          `That time conflicts with your calendar on ${date} (${startTime}${endTime ? `–${endTime}` : ""}).\n\nConflicts:\n${conflictLines}${slotsSection}`,
         toolCalls: toolCallsWithIds,
         requestId: rid,
         pendingEventDraft:
