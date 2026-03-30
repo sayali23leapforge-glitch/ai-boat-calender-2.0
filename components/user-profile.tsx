@@ -567,6 +567,73 @@ export function UserProfile() {
               </div>
             </div>
           </div>
+
+          {/* Gmail Reminders & Alerts */}
+          <div className="space-y-4 pt-4 border-t border-border/30">
+            <div className="flex items-center gap-2">
+              <Mail className="h-4 w-4 text-primary" />
+              <h3 className="text-sm font-semibold text-foreground">Gmail Reminders & Alerts</h3>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Get automatic email reminders for your tasks and events before they're due.
+            </p>
+
+            {/* How to check */}
+            <div className="space-y-2 pt-1">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">How to check reminders</p>
+              <div className="space-y-2">
+                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/20 text-primary text-xs font-bold shrink-0 mt-0.5">1</span>
+                  <div>
+                    <p className="text-sm font-medium">Connect your Gmail</p>
+                    <p className="text-xs text-muted-foreground">Go to Integrations → Connect Google Calendar & Gmail</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/20 text-primary text-xs font-bold shrink-0 mt-0.5">2</span>
+                  <div>
+                    <p className="text-sm font-medium">View task/event reminders</p>
+                    <p className="text-xs text-muted-foreground">Open any task or event and check "Mail alerts" status with upcoming reminder times</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
+                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/20 text-primary text-xs font-bold shrink-0 mt-0.5">3</span>
+                  <div>
+                    <p className="text-sm font-medium">Check your Gmail inbox</p>
+                    <p className="text-xs text-muted-foreground">Calendar app will send reminder emails automatically before due dates</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Reminder features */}
+            <div className="space-y-2 pt-2">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Features</p>
+              <div className="space-y-2">
+                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
+                  <span className="text-green-600 dark:text-green-400 text-lg mt-0.5 shrink-0">✓</span>
+                  <div>
+                    <p className="text-xs md:text-sm font-medium">Multiple Reminders</p>
+                    <p className="text-xs text-muted-foreground">Get alerts at different times (1 hour before, 1 day before, etc.)</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
+                  <span className="text-green-600 dark:text-green-400 text-lg mt-0.5 shrink-0">✓</span>
+                  <div>
+                    <p className="text-xs md:text-sm font-medium">Automatic Emails</p>
+                    <p className="text-xs text-muted-foreground">Reminders are sent to your Gmail at the scheduled time</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
+                  <span className="text-green-600 dark:text-green-400 text-lg mt-0.5 shrink-0">✓</span>
+                  <div>
+                    <p className="text-xs md:text-sm font-medium">Status Tracking</p>
+                    <p className="text-xs text-muted-foreground">See pending, sent, and completed reminders for each item</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
             </div>
           </div>
         </div>
