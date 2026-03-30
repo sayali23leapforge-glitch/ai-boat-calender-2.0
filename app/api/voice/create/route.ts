@@ -1,17 +1,111 @@
 /**
- * Simplified API endpoint for iOS Voice Shortcut
- * Accepts transcribed text directly (not audio file)
- * Creates task/event/goal from the text
+ * iOS Voice Shortcut Endpoint
+ * Accepts: Audio file OR transcribed text
+ * Creates task/event/goal from voice input
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { supabase } from '@/lib/supabase';
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { text, userId } = body;
+    let text = '';
+    let userId = '';
+
+    // Try to get userId from query params or headers first
+    userId = req.nextUrl.searchParams.get('userId') || req.headers.get('x-user-id') || '';
+
+    // Check Content-Type to determine how to parse the request
+    const contentType = req.headers.get('content-type') || '';
+    
+    console.log('[Voice Create] 🎤 Request received. Content-Type:', contentType);
+
+    if (contentType.includes('multipart/form-data')) {
+      // Handle multipart form data (audio file upload)
+      console.log('[Voice Create] 📁 Handling multipart form-data...');
+      const formData = await req.formData();
+      const audioFile = formData.get('audio') as File;
+      userId = (formData.get('userId') as string) || userId;
+
+      if (!audioFile) {
+        return NextResponse.json(
+          { error: 'No audio file provided', success: false },
+          { status: 400 }
+        );
+      }
+
+      if (!process.env.OPENAI_API_KEY) {
+        return NextResponse.json(
+          { error: 'OpenAI API not configured', success: false },
+          { status: 500 }
+        );
+      }
+
+      console.log('[Voice Create] 🎙️ Transcribing audio file:', audioFile.name);
+
+      // Transcribe audio using OpenAI Whisper
+      const openai = new OpenAI({
+        apiKey: process.env.OPENAI_API_KEY,
+      });
+
+      const transcription = await openai.audio.transcriptions.create({
+        file: audioFile,
+        model: 'whisper-1',
+        language: 'en',
+      });
+
+      text = transcription.text.trim();
+      console.log('[Voice Create] 📝 Transcribed:', text);
+    } else if (contentType.includes('application/json')) {
+      // Handle JSON body (text or audio as base64)
+      console.log('[Voice Create] 📋 Handling JSON body...');
+      const body = await req.json();
+      text = body.text || '';
+      userId = body.userId || userId;
+
+      if (body.audio && !text) {
+        // If audio base64 is provided, transcribe it
+        if (!process.env.OPENAI_API_KEY) {
+          return NextResponse.json(
+            { error: 'OpenAI API not configured', success: false },
+            { status: 500 }
+          );
+        }
+
+        console.log('[Voice Create] 🎙️ Decoding and transcribing base64 audio...');
+
+        const audioBuffer = Buffer.from(body.audio, 'base64');
+        const audioBlob = new Blob([audioBuffer], { type: 'audio/wave' });
+        const audioFile = new File([audioBlob], 'voice.wav', { type: 'audio/wave' });
+
+        const openai = new OpenAI({
+          apiKey: process.env.OPENAI_API_KEY,
+        });
+
+        const transcription = await openai.audio.transcriptions.create({
+          file: audioFile,
+          model: 'whisper-1',
+          language: 'en',
+        });
+
+        text = transcription.text.trim();
+        console.log('[Voice Create] 📝 Transcribed:', text);
+      }
+    } else {
+      // Try to parse as JSON anyway
+      try {
+        const body = await req.json();
+        text = body.text || '';
+        userId = body.userId || userId;
+      } catch (e) {
+        return NextResponse.json(
+          { error: 'Invalid content type. Use multipart/form-data or application/json', success: false },
+          { status: 400 }
+        );
+      }
+    }
 
     if (!text || !userId) {
       return NextResponse.json(
@@ -22,13 +116,12 @@ export async function POST(req: NextRequest) {
 
     if (!process.env.GOOGLE_API_KEY) {
       return NextResponse.json(
-        { error: 'Missing API configuration', success: false },
+        { error: 'Google API not configured', success: false },
         { status: 500 }
       );
     }
 
-    console.log('[Voice Create] 🎤 Processing voice text from user:', userId);
-    console.log('[Voice Create] 📝 Text:', text);
+    console.log('[Voice Create] ✅ Got text and userId. Analyzing intent...');
 
     // Use Gemini to classify intent and extract details
     const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
