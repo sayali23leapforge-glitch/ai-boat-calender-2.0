@@ -30,6 +30,32 @@ export function UserProfile() {
     loadUserData()
   }, [])
 
+  const refreshBlooNumber = async () => {
+    try {
+      console.log('[Frontend] 🔄 Refreshing Bloo number...')
+      const response = await fetch(`/api/bloo/number?t=${Date.now()}`, {
+        cache: 'no-store',
+      })
+      if (response.ok) {
+        const data = await response.json()
+        console.log('[Frontend] ✅ Refreshed Bloo number:', data.blooNumber)
+        if (data.blooNumber) {
+          setBlooNumber(data.blooNumber)
+          setNewBlooNumber(data.blooNumber)
+          toast.success('Bloo number updated!')
+        } else {
+          toast.error('No Bloo number found')
+        }
+      } else {
+        console.error('[Frontend] Failed to refresh:', response.status)
+        toast.error('Failed to refresh Bloo number')
+      }
+    } catch (error) {
+      console.error('[Frontend] Refresh error:', error)
+      toast.error('Error refreshing Bloo number')
+    }
+  }
+
   const loadUserData = async () => {
     try {
       // Get current user
@@ -61,16 +87,28 @@ export function UserProfile() {
       }
 
       // Get latest Bloo number from webhook endpoint
-      const blooResponse = await fetch("/api/bloo/number")
+      console.log('[Frontend] 🔄 Loading latest Bloo number...')
+      const blooResponse = await fetch(`/api/bloo/number?t=${Date.now()}`, {
+        cache: 'no-store',
+        headers: {
+          'Pragma': 'no-cache',
+          'Cache-Control': 'no-cache, no-store',
+        }
+      })
       if (blooResponse.ok) {
         const blooData = await blooResponse.json()
+        console.log('[Frontend] ✅ Latest Bloo number response:', blooData)
         if (blooData.blooNumber) {
-          console.log("[Frontend] ✅ Latest Bloo number:", blooData.blooNumber)
+          console.log('[Frontend] ✅ Setting Bloo number:', blooData.blooNumber)
           setBlooNumber(blooData.blooNumber)
           setNewBlooNumber(blooData.blooNumber)
+        } else {
+          console.warn('[Frontend] No blooNumber in response')
+          setBlooNumber(null)
         }
       } else {
-        console.warn("[Frontend] Failed to fetch latest Bloo number")
+        console.error('[Frontend] Failed to fetch Bloo number:', blooResponse.status, blooResponse.statusText)
+        setBlooNumber(null)
       }
 
       // Get stats
@@ -353,22 +391,23 @@ export function UserProfile() {
               <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-muted/50 border border-border/30 rounded-lg p-3">
                 <div className="flex-1">
                   <span className="font-medium text-foreground text-sm break-all">
-                    {blooNumber || "Not set"}
+                    {blooNumber ? `${blooNumber}` : "⏳ Loading..."}
                   </span>
                   <p className="text-xs text-muted-foreground mt-1">
                     {blooNumber 
-                      ? "✓ Incoming messages to this number will create tasks" 
-                      : "Set this to receive incoming messages"}
+                      ? "✓ Auto-synced from Bloo. Messages here create tasks." 
+                      : "Set up Bloo webhook to auto-sync"}
                   </p>
                 </div>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setEditingBloo(true)}
+                  onClick={refreshBlooNumber}
                   className="gap-2 w-full md:w-auto"
+                  title="Refresh Bloo number from webhook storage"
                 >
-                  <Edit2 className="h-4 w-4" />
-                  Edit
+                  <span>🔄</span>
+                  Refresh
                 </Button>
               </div>
             ) : (
