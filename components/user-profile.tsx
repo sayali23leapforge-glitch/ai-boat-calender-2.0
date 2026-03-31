@@ -60,19 +60,17 @@ export function UserProfile() {
         setNewPhone(phoneData.phone || "")
       }
 
-      // Get Bloo number from app_config (webhook updates it!)
-      const { data: configData, error: configError } = await supabase
-        .from("app_config")
-        .select("bloo_number, updated_at")
-        .eq("key", "global_bloo_number")
-        .maybeSingle()
-
-      if (configData?.bloo_number) {
-        console.log("[Frontend] ✅ Bloo number fetched from webhook:", configData.bloo_number)
-        setBlooNumber(configData.bloo_number)
-        setNewBlooNumber(configData.bloo_number)
+      // Get latest Bloo number from webhook endpoint
+      const blooResponse = await fetch("/api/bloo/get-number")
+      if (blooResponse.ok) {
+        const blooData = await blooResponse.json()
+        if (blooData.blooNumber) {
+          console.log("[Frontend] ✅ Latest Bloo number:", blooData.blooNumber)
+          setBlooNumber(blooData.blooNumber)
+          setNewBlooNumber(blooData.blooNumber)
+        }
       } else {
-        console.warn("[Frontend] Failed to fetch Bloo number from webhook storage")
+        console.warn("[Frontend] Failed to fetch latest Bloo number")
       }
 
       // Get stats
