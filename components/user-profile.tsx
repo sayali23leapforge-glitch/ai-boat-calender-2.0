@@ -60,8 +60,8 @@ export function UserProfile() {
         setNewPhone(phoneData.phone || "")
       }
 
-      // Get Bloo number via API
-      const blooResponse = await fetch("/api/user/bloo", {
+      // Get Bloo number directly from Bloo API (always fresh!)
+      const blooResponse = await fetch("/api/bloo/number", {
         method: "GET",
         headers: {
           "Authorization": `Bearer ${session.access_token}`,
@@ -70,9 +70,11 @@ export function UserProfile() {
 
       if (blooResponse.ok) {
         const blooData = await blooResponse.json()
-        console.log("[Frontend] Bloo number loaded:", blooData.blooNumber)
+        console.log("[Frontend] ✅ Bloo number fetched from API:", blooData.blooNumber)
         setBlooNumber(blooData.blooNumber || "")
         setNewBlooNumber(blooData.blooNumber || "")
+      } else {
+        console.warn("[Frontend] Failed to fetch Bloo number:", blooResponse.status)
       }
 
       // Get stats
