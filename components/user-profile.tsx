@@ -61,7 +61,7 @@ export function UserProfile() {
       }
 
       // Get latest Bloo number from webhook endpoint
-      const blooResponse = await fetch("/api/bloo/get-number")
+      const blooResponse = await fetch("/api/bloo/number")
       if (blooResponse.ok) {
         const blooData = await blooResponse.json()
         if (blooData.blooNumber) {

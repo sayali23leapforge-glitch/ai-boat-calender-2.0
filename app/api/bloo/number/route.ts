@@ -1,71 +1,53 @@
 /**
- * Fetch Bloo Number from Bloo API
- * Gets the current Bloo phone number directly from Bloo's servers
- * No database storage - always fresh!
+ * Get Latest Bloo Number from Webhook Storage
+ * All user profiles call this to get the current number
+ * Updated automatically when Bloo sends webhook update
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { getSupabaseAdminClient } from '@/lib/supabase-admin';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export async function GET(req: NextRequest) {
   try {
-    const authHeader = req.headers.get('authorization');
-    if (!authHeader?.startsWith('Bearer ')) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-    }
+    console.log('[BlooNumber] 🔄 Fetching latest Bloo number from webhook storage...');
 
-    const blooApiKey = process.env.BLOO_API_KEY;
-    if (!blooApiKey) {
-      console.error('[BlooNumber] BLOO_API_KEY not configured');
+    const admin = getSupabaseAdminClient();
+
+    const { data, error } = await admin
+      .from('app_config')
+      .select('bloo_number, updated_at')
+      .eq('key', 'global_bloo_number')
+      .maybeSingle();
+
+    if (error) {
+      console.error('[BlooNumber] Database error:', error);
       return NextResponse.json(
-        { error: 'Bloo API key not configured' },
+        { error: 'Failed to fetch', details: error.message },
         { status: 500 }
       );
     }
 
-    console.log('[BlooNumber] 🔄 Fetching Bloo number from Bloo API...');
-
-    // Fetch account info from Bloo to get the phone number
-    const response = await fetch('https://backend.blooio.com/v2/api/account', {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${blooApiKey}`,
-        'Content-Type': 'application/json',
-      },
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      console.error('[BlooNumber] ❌ Bloo API error:', data);
-      return NextResponse.json(
-        { error: 'Failed to fetch Bloo number from API', details: data },
-        { status: 500 }
-      );
+    if (!data?.bloo_number) {
+      console.warn('[BlooNumber] No number found in webhook storage');
+      return NextResponse.json({
+        blooNumber: null,
+        message: 'No Bloo number set',
+        source: 'webhook_storage',
+      });
     }
 
-    // Try multiple field names where Bloo might return the phone number
-    let phoneNumber = null;
-    
-    if (data.phone) phoneNumber = data.phone;
-    else if (data.number) phoneNumber = data.number;
-    else if (data.phone_number) phoneNumber = data.phone_number;
-    else if (data.mobile) phoneNumber = data.mobile;
-    else if (data.from) phoneNumber = data.from;
-    else if (data.sender) phoneNumber = data.sender;
-    else if (data.numbers?.[0]) phoneNumber = data.numbers[0];
+    let phoneNumber = data.bloo_number;
 
-    console.log('[BlooNumber] ✅ Fetched from Bloo API:', phoneNumber);
-    console.log('[BlooNumber] Full response keys:', Object.keys(data).join(', '));
+    console.log('[BlooNumber] ✅ Retrieved from webhook storage:', phoneNumber);
 
     return NextResponse.json(
       { 
-        success: true, 
         blooNumber: phoneNumber,
-        source: 'bloo_api',
-        timestamp: new Date().toISOString()
+        updatedAt: data.updated_at,
+        source: 'webhook_storage'
       },
       {
         status: 200,
