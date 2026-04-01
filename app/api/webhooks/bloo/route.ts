@@ -273,7 +273,15 @@ Return ONLY the JSON object, nothing else - no markdown, no extra text.`
     });
 
     const rawText = result.response.text().trim().replace(/```json|```/g, "").trim();
-    const analyzed = JSON.parse(rawText);
+    // Fix 3: safe JSON parse — Gemini occasionally wraps output even with instructions
+    let analyzed: any;
+    try {
+      analyzed = JSON.parse(rawText);
+    } catch {
+      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) { console.error("[Webhook] 📸 Could not parse image JSON:", rawText.slice(0, 100)); return null; }
+      try { analyzed = JSON.parse(jsonMatch[0]); } catch { return null; }
+    }
     console.log("[Webhook] 📸 Image analysis:", analyzed);
     return analyzed;
 
@@ -284,38 +292,63 @@ Return ONLY the JSON object, nothing else - no markdown, no extra text.`
 }
 
 // ─── AI INTENT ────────────────────────────────────────────────────────────────
-type Intent = { type: "task" | "goal" | "event" | null; title: string; date: string | null; time: string | null };
+type Intent = {
+  type: "task" | "goal" | "event" | "delete_task" | "delete_event" | "delete_goal" | "query" | null;
+  title: string;
+  date: string | null;
+  time: string | null;
+  queryRange?: "today" | "tomorrow" | "this_week" | "date";
+};
 
-// Check if message is purely conversational (not actionable)
-function isConversational(text: string): boolean {
-  const lower = text.toLowerCase().trim();
-  
-  // Exact matches or very short greetings
-  if (/^(hi|hey|hello|thanks|thanks much|thanx|ok|okay|cool|good|yeah|sure|yes|no|right|lol|haha|awesome|nice|great|wonderful)$/i.test(lower)) {
-    return true;
+// ─── CONVERSATION HISTORY (Fix 1 + 2) ─────────────────────────────────────────
+// SQL migration (run once in Supabase SQL editor):
+//   CREATE TABLE IF NOT EXISTS bloo_conversations (
+//     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+//     user_id uuid NOT NULL,
+//     role text NOT NULL CHECK (role IN ('user', 'model')),
+//     text text NOT NULL,
+//     created_at timestamptz NOT NULL DEFAULT now()
+//   );
+//   CREATE INDEX IF NOT EXISTS bloo_conv_user_created ON bloo_conversations (user_id, created_at DESC);
+
+type HistoryTurn = { role: "user" | "model"; text: string };
+
+async function loadHistory(admin: ReturnType<typeof getSupabaseAdminClient>, userId: string): Promise<HistoryTurn[]> {
+  try {
+    const { data } = await admin
+      .from("bloo_conversations")
+      .select("role, text")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(6); // last 3 pairs of turns (Fix 2: context window bound)
+    if (!data?.length) return [];
+    return (data as Array<{ role: string; text: string }>)
+      .reverse()
+      .map(r => ({ role: r.role as "user" | "model", text: String(r.text || "").slice(0, 500) })); // Fix 2: 500-char cap
+  } catch {
+    return []; // table may not exist yet — graceful degradation
   }
-  
-  // Questions (ending with ?)
-  if (/\?$/.test(lower)) {
-    return true;
+}
+
+async function saveHistory(admin: ReturnType<typeof getSupabaseAdminClient>, userId: string, userText: string, modelText: string): Promise<void> {
+  try {
+    await admin.from("bloo_conversations").insert([
+      { user_id: userId, role: "user",  text: userText.slice(0, 500) },
+      { user_id: userId, role: "model", text: modelText.slice(0, 500) },
+    ]);
+    // Prune to last 20 rows to prevent unbounded growth
+    const { data: all } = await admin
+      .from("bloo_conversations")
+      .select("id")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true });
+    if (all && all.length > 20) {
+      const ids = all.slice(0, all.length - 20).map((r: any) => r.id);
+      await admin.from("bloo_conversations").delete().in("id", ids);
+    }
+  } catch (e: any) {
+    console.error("[Webhook] saveHistory error:", e?.message);
   }
-  
-  // Common greetings and pleasantries
-  if (/\b(how are you|how are you doing|what's up|sup|yo|what's new|how's it|tell me|what time|what date|hello there|hey there|good morning|good evening|good night)\b/i.test(lower)) {
-    return true;
-  }
-  
-  // Chat-related phrases (the main issue!)
-  if (/\b(chat with|chat with me|chat with you|talk to me|talk to you|just chat|just talk|let's chat|let's talk|keep talking|keep chatting|converse|conversation)\b/i.test(lower)) {
-    return true;
-  }
-  
-  // Responses to bot suggestions
-  if (/\b(or just|just like you suggested|sounds good|i'll try|let me think)\b/i.test(lower)) {
-    return true;
-  }
-  
-  return false;
 }
 
 // Extract actionable intent from ANY message - strip ALL narrative filler
@@ -390,53 +423,110 @@ Cleaned intent:`
   }
 }
 
-async function analyzeIntent(text: string): Promise<Intent> {
+async function analyzeIntent(text: string, history: HistoryTurn[]): Promise<Intent> {
   const { today, tomorrow } = getTodayTomorrow();
   const apiKey = process.env.GEMINI_API_KEY;
-  
-  // For ALL messages: attempt to extract actionable intent first
-  // This will find what the user actually wants, regardless of narrative
+
+  if (!apiKey) return fallbackIntent(text);
+
+  // Skip narrative extraction for delete/query commands — don't strip the intent verb
+  const isDeleteOrQuery = /\b(delete|remove|cancel|what'?s on|show me|list my|what do i have|my tasks|my calendar|my events|my goals)\b/i.test(text);
   let cleanedText = text;
-  if (apiKey) {
-    console.log("[Webhook] 🔄 Attempting to extract actionable intent from ALL messages...");
+  if (!isDeleteOrQuery) {
     cleanedText = await extractActionableIntent(text);
-    
-    // If extraction returned short acknowledgments, it's purely conversational
     if (/^(ok|okay|sure|yes|no|thanks|thank you|cool|got it|understood|hi|hey|hello)$/i.test(cleanedText.trim())) {
       console.log("[Webhook] 💬 Detected pure conversational message");
       return { type: null, title: text, date: null, time: null };
     }
-    
     console.log("[Webhook] 📝 Cleaned text:", cleanedText);
   }
-  
-  if (apiKey) {
-    try {
-      const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-      const result = await model.generateContent({
-        contents: [{
-          role: "user",
-          parts: [{
-            text: `Classify this message. Return ONLY valid JSON, no markdown, no extra text.\n\nMessage: "${cleanedText}"\n\nJSON format:\n{"type":"event","title":"concise title","date":"YYYY-MM-DD","time":"HH:MM"}\n\nClassification rules:\n- "event" = meetings, appointments, calls, plans with SPECIFIC DATE/TIME (meeting tomorrow 2pm, dentist Friday, call Sarah at 3pm, dinner tonight 7pm)\n- "task" = actions without specific date/time (buy milk, call mom, fix bug, clean room)\n- "goal" = habits or learning goals (learn piano daily, exercise 3x week, practice guitar)\n- null = pure conversation (hi, how are you, thanks, what time is it)\n\nKEY: If message mentions:\n- meeting, appointment, dentist, doctor, call, dinner, lunch, breakfast → ALWAYS "event" if it has a date/time\n- tomorrow, today, specific date, specific time (2pm, 3:30am) → This makes it an "event"\n\nToday=${today}, Tomorrow=${tomorrow}\n\nAlways extract the actual date/time from the message. Use ISO format for dates (YYYY-MM-DD) and 24-hour format for times (HH:MM).`
-          }]
-        }],
-        generationConfig: { maxOutputTokens: 500, temperature: 0.1 },
-      });
-      const raw = result.response.text().trim().replace(/```json|```/g, "").trim();
-      console.log("[Webhook] 📊 Gemini classification:", raw);
-      const parsed = JSON.parse(raw);
-      return {
-        type: parsed.type ?? null,
-        title: String(parsed.title ?? cleanedText).trim(),
-        date: parsed.date ?? null,
-        time: parsed.time ?? null,
-      };
-    } catch (e: any) {
-      console.log("[Webhook] Gemini failed:", e?.message);
+
+  // ── Fix 1: Build multi-turn contents from history ──────────────────────────
+  // Cap to last 3 pairs (Fix 2: context window bound, each already capped at 500 chars in loadHistory)
+  const cappedHistory = history.slice(-6);
+  const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
+  for (const turn of cappedHistory) {
+    const last = contents[contents.length - 1];
+    // Fix 1: merge consecutive same-role turns (mirrors the web fix)
+    if (last && last.role === turn.role) {
+      last.parts[0].text += "\n" + turn.text;
+    } else {
+      contents.push({ role: turn.role, parts: [{ text: turn.text }] });
     }
   }
-  return fallbackIntent(cleanedText);
+  // Append current user message
+  const lastContent = contents[contents.length - 1];
+  if (lastContent && lastContent.role === "user") {
+    lastContent.parts[0].text += "\n" + cleanedText;
+  } else {
+    contents.push({ role: "user", parts: [{ text: cleanedText }] });
+  }
+
+  try {
+    const genAI = new GoogleGenerativeAI(apiKey);
+    // Fix 1: pass systemInstruction so history context is used correctly
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.5-flash",
+      systemInstruction: `You are a calendar assistant. Classify the user's latest message using conversation history for pronoun resolution.
+Today=${today}. Tomorrow=${tomorrow}.
+Return ONLY a single JSON object — no markdown, no extra text.
+
+Format: {"type":"...","title":"...","date":"YYYY-MM-DD or null","time":"HH:MM or null","queryRange":"today|tomorrow|this_week|date or null"}
+
+Types:
+- "task"         = create action item (buy milk, call mom, fix bug)
+- "goal"         = create habit/learning goal (learn piano, exercise daily)
+- "event"        = create scheduled item with date or time
+- "delete_task"  = delete/remove/cancel a task  ("delete task X", "remove X")
+- "delete_event" = delete/cancel an event ("cancel dentist", "remove Friday meeting")
+- "delete_goal"  = delete a goal ("remove my running goal")
+- "query"        = read existing items ("what's on my calendar", "show tasks", "what do I have today/this week")
+- null           = pure conversation (hi, thanks, how are you)
+
+Rules:
+- For "query": set queryRange to "today","tomorrow","this_week", or "date" (+ date field).
+- For "delete_*": set title to the item name. If user says "it"/"that" with no clear name, set title to "".
+- For "event": set date if mentioned; if no date use "event" type anyway.
+- Resolve pronouns ("change it","delete that","move it to Friday") using the conversation history above.`,
+    });
+
+    // Fix 3: use JSON mode — guarantees raw JSON output (no markdown fences)
+    const result = await model.generateContent({
+      contents,
+      generationConfig: {
+        responseMimeType: "application/json",
+        temperature: 0.1,
+        maxOutputTokens: 200,
+      },
+    });
+
+    const raw = result.response.text().trim();
+    console.log("[Webhook] 📊 Gemini classification:", raw);
+
+    // Fix 3: safe JSON parse with regex fallback
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return fallbackIntent(cleanedText);
+      try { parsed = JSON.parse(jsonMatch[0]); } catch { return fallbackIntent(cleanedText); }
+    }
+
+    const VALID_TYPES = ["task","goal","event","delete_task","delete_event","delete_goal","query"];
+    const type = VALID_TYPES.includes(parsed.type) ? parsed.type as Intent["type"] : null;
+
+    return {
+      type,
+      title: String(parsed.title ?? cleanedText).trim(),
+      date: parsed.date ?? null,
+      time: parsed.time ?? null,
+      queryRange: parsed.queryRange ?? undefined,
+    };
+  } catch (e: any) {
+    console.log("[Webhook] analyzeIntent failed:", e?.message);
+    return fallbackIntent(cleanedText);
+  }
 }
 
 function fallbackIntent(text: string): Intent {
@@ -505,6 +595,70 @@ function fallbackIntent(text: string): Intent {
   }
   
   return { type, title: text.trim(), date, time };
+}
+
+// ─── QUERY CALENDAR (Fix 4) ───────────────────────────────────────────────────
+async function queryCalendar(admin: ReturnType<typeof getSupabaseAdminClient>, userId: string, range: string | undefined, date: string | null): Promise<string> {
+  const { today, tomorrow } = getTodayTomorrow();
+
+  let startDate: string;
+  let endDate: string;
+  let label: string;
+
+  if (range === "tomorrow") {
+    startDate = endDate = tomorrow; label = "tomorrow";
+  } else if (range === "this_week") {
+    startDate = today;
+    const end = new Date(today); end.setDate(end.getDate() + 7);
+    endDate = end.toISOString().split("T")[0]; label = "this week";
+  } else if (range === "date" && date) {
+    startDate = endDate = date; label = date;
+  } else {
+    startDate = endDate = today; label = "today";
+  }
+
+  const [eventsResult, tasksResult] = await Promise.all([
+    admin.from("calendar_events")
+      .select("title, event_date, start_time")
+      .eq("user_id", userId).eq("is_completed", false)
+      .gte("event_date", startDate).lte("event_date", endDate)
+      .not("start_time", "is", null)           // Fix 7 equivalent: only timed events in schedule view
+      .order("event_date", { ascending: true }).order("start_time", { ascending: true }).limit(10),
+    admin.from("tasks")
+      .select("title, due_date")
+      .eq("user_id", userId).eq("is_completed", false)
+      .gte("due_date", startDate).lte("due_date", endDate)
+      .order("due_date", { ascending: true }).limit(10),
+  ]);
+
+  const events: Array<{ title: string; event_date: string; start_time: string | null }> = eventsResult.data ?? [];
+  const tasks: Array<{ title: string; due_date: string | null }> = tasksResult.data ?? [];
+
+  if (events.length === 0 && tasks.length === 0) {
+    return `Nothing scheduled for ${label}.`;
+  }
+
+  const lines: string[] = [`📅 Your schedule for ${label}:\n`];
+  if (events.length > 0) {
+    lines.push("Events:");
+    for (const e of events) lines.push(`  • ${e.title}${e.start_time ? ` at ${e.start_time}` : ""} (${e.event_date})`);
+  }
+  if (tasks.length > 0) {
+    if (events.length > 0) lines.push("");
+    lines.push("Tasks due:");
+    for (const t of tasks) lines.push(`  • ${t.title}`);
+  }
+  return lines.join("\n");
+}
+
+// ─── DELETE HELPERS (Fix 5) ───────────────────────────────────────────────────
+async function deleteByTitle(admin: ReturnType<typeof getSupabaseAdminClient>, table: string, userId: string, titleQuery: string): Promise<{ deleted: boolean; foundTitle: string | null }> {
+  const { data, error } = await admin.from(table)
+    .select("id, title").eq("user_id", userId)
+    .ilike("title", `%${titleQuery}%`).limit(1);
+  if (error || !data?.length) return { deleted: false, foundTitle: null };
+  const { error: delErr } = await admin.from(table).delete().eq("id", data[0].id);
+  return { deleted: !delErr, foundTitle: data[0].title };
 }
 
 // ─── SEND BLOO ────────────────────────────────────────────────────────────────
@@ -714,112 +868,119 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true }, { status: 200 });
     }
 
-    // 6. Quick intent for fast response - use full analyzeIntent to extract actionable content
-    const quickIntent = await analyzeIntent(text);
+    // 6. Load conversation history (Fix 1 + 2) + analyze intent with context
+    const history = await loadHistory(admin, userId);
+    const quickIntent = await analyzeIntent(text, history);
     console.log("[Webhook] Quick Intent (AI-analyzed):", JSON.stringify(quickIntent));
 
-    // Determine source (already extracted audioUrl/imageUrl above)
     const sourceType = imageUrl ? "image" : audioUrl ? "voice" : "text";
 
-    // 7. CREATE DB ENTRY FIRST (verify it works before sending confirmation)
-    let dbSuccess = false;
-    let dbError = "";
-
-    // Merge image data into intent if available
+    // 7. Merge image data into intent if available
     let finalIntent = { ...quickIntent };
-    let finalDescription = `via Bloo (${sourceType})`;
-    
+    const finalDescription = `via Bloo (${sourceType})`;
+
     if (imageData) {
-      // Prefer image title if it looks like a real event/task title (longer, not just user command)
       if (imageData.title && imageData.title.length > 5 && !imageData.title.toLowerCase().includes("schedule")) {
         finalIntent.title = imageData.title;
       }
-      // Use image type if detected
-      if (imageData.type) finalIntent.type = imageData.type;
-      
-      // For dates/times: Image provides defaults, but user's explicit date context ("tomorrow", "Friday") should override
-      // Only use image date if user didn't specify a date in their text
+      if (imageData.type) finalIntent.type = imageData.type as Intent["type"];
       const userHasDateContext = /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(String(text || ""));
-      if (imageData.date && !userHasDateContext) {
-        finalIntent.date = imageData.date;  // Use image date only if user didn't specify
-      }
-      // Use image time (user can provide "tomorrow" for date + image for time)
+      if (imageData.date && !userHasDateContext) finalIntent.date = imageData.date;
       if (imageData.time) finalIntent.time = imageData.time;
-      
-      // For image, just keep it as "via Bloo (image)" without adding description
     }
 
+    // 7a. Fix 6: Ambiguity guard for delete — resolve pronoun from history or ask for clarification
+    const VAGUE_PRONOUN = /^(it|that|this|the event|the task|the meeting|the appointment|the goal)$/i;
+    if (finalIntent.type === "delete_task" || finalIntent.type === "delete_event" || finalIntent.type === "delete_goal") {
+      if (!finalIntent.title || VAGUE_PRONOUN.test(finalIntent.title.trim())) {
+        // Try resolving from last bot confirmation message in history
+        const lastConfirm = [...history].reverse().find(t =>
+          t.role === "model" && /✅ Task created:|📅 Event added:|🎯 Goal set:/.test(t.text)
+        );
+        const nameMatch = lastConfirm?.text.match(/"([^"]+)"/);
+        if (nameMatch) {
+          finalIntent.title = nameMatch[1];
+          console.log("[Webhook] 🔍 Resolved pronoun delete to:", finalIntent.title);
+        } else {
+          const typeLabel = finalIntent.type === "delete_task" ? "task" : finalIntent.type === "delete_event" ? "event" : "goal";
+          const clarify = `Which ${typeLabel} would you like to delete? Please give me the name.`;
+          await sendBloo(replyTo, clarify, blooNumber, protocol);
+          await saveHistory(admin, userId, text, clarify);
+          return NextResponse.json({ ok: true }, { status: 200 });
+        }
+      }
+    }
+
+    // 8. DB operations
+    let dbSuccess = false;
+    let dbError = "";
+    let sentResponse = "";
+
     try {
-      if (quickIntent.type === "task") {
+      if (finalIntent.type === "task") {
         const listId = await getOrCreateTaskList(admin, userId);
         if (!listId) {
           dbError = "Could not create task list";
         } else {
           const { error } = await admin.from("tasks").insert({
             user_id: userId, list_id: listId,
-            title: finalIntent.title.slice(0, 200),
-            notes: finalDescription,
-            due_date: finalIntent.date ?? null,
-            due_time: finalIntent.time ?? null,
-            is_completed: false, is_starred: false,
-            position: 0, priority: "medium", progress: 0,
+            title: finalIntent.title.slice(0, 200), notes: finalDescription,
+            due_date: finalIntent.date ?? null, due_time: finalIntent.time ?? null,
+            is_completed: false, is_starred: false, position: 0, priority: "medium", progress: 0,
           });
-          if (error) {
-            dbError = error.message;
-          } else {
-            dbSuccess = true;
-            console.log("[Webhook] ✅ Task inserted to DB");
-          }
+          if (error) { dbError = error.message; } else { dbSuccess = true; console.log("[Webhook] ✅ Task inserted"); }
         }
+
       } else if (finalIntent.type === "goal") {
         const { error } = await admin.from("goals").insert({
-          user_id: userId,
-          title: finalIntent.title.slice(0, 200),
-          description: finalDescription,
-          category: "personal", priority: "medium",
-          progress: 0, target_date: finalIntent.date ?? null,
+          user_id: userId, title: finalIntent.title.slice(0, 200), description: finalDescription,
+          category: "personal", priority: "medium", progress: 0, target_date: finalIntent.date ?? null,
         });
-        if (error) {
-          dbError = error.message;
-        } else {
-          dbSuccess = true;
-          console.log("[Webhook] ✅ Goal inserted to DB");
-        }
+        if (error) { dbError = error.message; } else { dbSuccess = true; console.log("[Webhook] ✅ Goal inserted"); }
+
       } else if (finalIntent.type === "event") {
         if (finalIntent.date) {
           const { error } = await admin.from("calendar_events").insert({
-            user_id: userId,
-            title: finalIntent.title.slice(0, 200),
-            description: finalDescription,
-            event_date: finalIntent.date,
-            start_time: finalIntent.time ?? null,
+            user_id: userId, title: finalIntent.title.slice(0, 200), description: finalDescription,
+            event_date: finalIntent.date, start_time: finalIntent.time ?? null,
             is_completed: false, category: "other", priority: "medium",
           });
-          if (error) {
-            dbError = error.message;
-          } else {
-            dbSuccess = true;
-            console.log("[Webhook] ✅ Event inserted to DB");
-          }
+          if (error) { dbError = error.message; } else { dbSuccess = true; console.log("[Webhook] ✅ Event inserted"); }
         } else {
+          // No date — store as task (Fix 5: guard against empty updates)
           const listId = await getOrCreateTaskList(admin, userId);
-          if (!listId) {
-            dbError = "Could not create task list";
-          } else {
+          if (!listId) { dbError = "Could not create task list"; } else {
             const { error } = await admin.from("tasks").insert({
               user_id: userId, list_id: listId, title: finalIntent.title.slice(0, 200), notes: finalDescription,
-              due_time: finalIntent.time ?? null, is_completed: false, is_starred: false, position: 0, priority: "medium", progress: 0
+              due_time: finalIntent.time ?? null, is_completed: false, is_starred: false, position: 0, priority: "medium", progress: 0,
             });
-            if (error) {
-              dbError = error.message;
-            } else {
-              dbSuccess = true;
-              console.log("[Webhook] ✅ Task (no date) inserted to DB");
-            }
+            if (error) { dbError = error.message; } else { dbSuccess = true; console.log("[Webhook] ✅ Task (no date) inserted"); }
           }
         }
+
+      } else if (finalIntent.type === "delete_task") {
+        // Fix 5: delete task by title
+        const { deleted, foundTitle } = await deleteByTitle(admin, "tasks", userId, finalIntent.title);
+        if (deleted) { dbSuccess = true; finalIntent.title = foundTitle ?? finalIntent.title; console.log("[Webhook] ✅ Task deleted"); }
+        else { dbError = `No task found matching "${finalIntent.title}"`; }
+
+      } else if (finalIntent.type === "delete_event") {
+        const { deleted, foundTitle } = await deleteByTitle(admin, "calendar_events", userId, finalIntent.title);
+        if (deleted) { dbSuccess = true; finalIntent.title = foundTitle ?? finalIntent.title; console.log("[Webhook] ✅ Event deleted"); }
+        else { dbError = `No event found matching "${finalIntent.title}"`; }
+
+      } else if (finalIntent.type === "delete_goal") {
+        const { deleted, foundTitle } = await deleteByTitle(admin, "goals", userId, finalIntent.title);
+        if (deleted) { dbSuccess = true; finalIntent.title = foundTitle ?? finalIntent.title; console.log("[Webhook] ✅ Goal deleted"); }
+        else { dbError = `No goal found matching "${finalIntent.title}"`; }
+
+      } else if (finalIntent.type === "query") {
+        // Fix 4: calendar query
+        sentResponse = await queryCalendar(admin, userId, finalIntent.queryRange, finalIntent.date);
+        dbSuccess = true;
+
       } else {
-        // Conversational - no DB needed
+        // Conversational — no DB needed
         dbSuccess = true;
       }
     } catch (err: any) {
@@ -827,87 +988,49 @@ export async function POST(req: NextRequest) {
       console.error("[Webhook] DB operation error:", dbError);
     }
 
-    // 8. SEND RESPONSE BASED ON DB SUCCESS (await these so confirmation is sent before webhook returns)
+    // 9. Send response + save history
     if (finalIntent.type === "task" && dbSuccess) {
-      await sendBloo(replyTo, `✅ Task created: "${finalIntent.title}"`, blooNumber, protocol);
+      sentResponse = `✅ Task created: "${finalIntent.title}"`;
     } else if (finalIntent.type === "goal" && dbSuccess) {
-      await sendBloo(replyTo, `🎯 Goal set: "${finalIntent.title}"`, blooNumber, protocol);
+      sentResponse = `🎯 Goal set: "${finalIntent.title}"`;
     } else if (finalIntent.type === "event" && dbSuccess) {
       if (finalIntent.date) {
         const dateStr = finalIntent.time ? `${finalIntent.date} at ${finalIntent.time}` : finalIntent.date;
-        await sendBloo(replyTo, `📅 Event added: "${finalIntent.title}" — ${dateStr}`, blooNumber, protocol);
+        sentResponse = `📅 Event added: "${finalIntent.title}" — ${dateStr}`;
       } else {
-        await sendBloo(replyTo, `✅ Added: "${finalIntent.title}" (include a date like "tomorrow" or "Friday" to create a calendar event)`, blooNumber, protocol);
+        sentResponse = `✅ Added: "${finalIntent.title}" (include a date like "tomorrow" or "Friday" to create a calendar event)`;
       }
+    } else if (finalIntent.type === "delete_task" && dbSuccess) {
+      sentResponse = `🗑️ Task deleted: "${finalIntent.title}"`;
+    } else if (finalIntent.type === "delete_event" && dbSuccess) {
+      sentResponse = `🗑️ Event deleted: "${finalIntent.title}"`;
+    } else if (finalIntent.type === "delete_goal" && dbSuccess) {
+      sentResponse = `🗑️ Goal deleted: "${finalIntent.title}"`;
+    } else if (finalIntent.type === "query" && dbSuccess) {
+      // sentResponse already set by queryCalendar above
     } else if (dbError) {
-      // DB failed - send error
-      await sendBloo(replyTo, `❌ Error: ${dbError.slice(0, 60)}. Please try again.`, blooNumber, protocol);
+      sentResponse = `❌ ${dbError.slice(0, 80)}. Please try again.`;
     } else {
-      // Conversational response - no DB involved (greetings, questions, etc.)
-      // Distinguish between short greetings vs longer casual questions
-      const shortGreeting = /^(hi|hey|hello|thanks|thank you|cool|ok|okay|sure|yes|no|lol|haha)$/i.test(text.trim());
-      const casualQuestion = /\b(how are you|how are you doing|what's up|sup|what are you doing|what are you up to|what's going on|how's it going|how's your day|how's everything|how's your evening|how's your morning)\b/i.test(text.toLowerCase());
-      
-      let response = "";
-      
-      if (shortGreeting) {
-        // Short casual greeting - show full welcome with examples
-        response = "Hey there! 👋 I'm Cal, your calendar assistant! 📱\n\n😊 That's a great question!\n\nWhat would you like to create today?\n\n📝 **TASK** - \"Buy groceries\" or \"Call mom\"\n📅 **EVENT** - \"Meeting tomorrow at 2pm\" or \"Dinner Friday 7pm\"\n🎯 **GOAL** - \"Learn guitar daily\" or \"Exercise 3x week\"\n\nOr just chat with me! 💬";
+      // Conversational
+      const casualQuestion = /\b(how are you|how are you doing|what's up|what are you doing|how's it going|how's your day)\b/i.test(text.toLowerCase());
+      const { data: profileData } = await admin
+        .from("user_profiles").select("has_received_welcome").eq("user_id", userId).maybeSingle();
+      const alreadyWelcomed = profileData?.has_received_welcome === true;
+
+      if (!alreadyWelcomed) {
+        sentResponse = "Hey there! 👋 I'm Cal, your calendar assistant! 📱\n\nWhat would you like to create today?\n\n📝 **TASK** - \"Buy groceries\" or \"Call mom\"\n📅 **EVENT** - \"Meeting tomorrow at 2pm\" or \"Dinner Friday 7pm\"\n🎯 **GOAL** - \"Learn guitar daily\" or \"Exercise 3x week\"\n\nOr just chat with me! 💬";
+        await admin.from("user_profiles").update({ has_received_welcome: true }).eq("user_id", userId);
       } else if (casualQuestion) {
-        // Longer casual question - casual friendly reply
-        response = "😊 I'm doing great, thanks for asking! 👋\n\nWhat can I help you with today? You can create:\n• 📝 Tasks - \"Buy milk\"\n• 📅 Events - \"Meeting tomorrow 2pm\"\n• 🎯 Goals - \"Exercise daily\"\n\nOr just chat! 💬";
+        sentResponse = "😊 Doing great, thanks! What would you like to create? A task, event, or goal?";
       } else {
-        // Other questions/comments - friendly greeting with options
-        response = "Hey there! 👋 I'm Cal, your calendar assistant! 📱\n\n😊 That's a great question!\n\nWhat would you like to create today?\n\n📝 **TASK** - \"Buy groceries\" or \"Call mom\"\n📅 **EVENT** - \"Meeting tomorrow at 2pm\" or \"Dinner Friday 7pm\"\n🎯 **GOAL** - \"Learn guitar daily\" or \"Exercise 3x week\"\n\nOr just chat with me! 💬";
+        sentResponse = "Hey! 👋 What can I help you create today? Try: \"Buy milk\" (task), \"Meeting Friday 2pm\" (event), or \"Learn Spanish\" (goal).";
       }
-      
-      await sendBloo(replyTo, response, blooNumber, protocol);
     }
 
-    // 9. BACKGROUND: Refine with Gemini if needed (doesn't block response)
-    (async () => {
-      try {
-        if (finalIntent.type === null) {
-          // Conversational - get AI response in background
-          const apiKey = process.env.GEMINI_API_KEY;
-          if (apiKey) {
-            const genAI = new GoogleGenerativeAI(apiKey);
-            const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-            const res = await model.generateContent({
-              contents: [{
-                role: "user",
-                parts: [{
-                  text: `You are Cal, a friendly calendar AI assistant. Users message you to create tasks, events, and goals.
+    await sendBloo(replyTo, sentResponse, blooNumber, protocol);
 
-RESPONSE RULES:
-1. Always respond warmly with emojis 😊
-2. For greetings ("hey", "hi", "hello", "how are you"), respond cheerfully then offer to help
-3. ALWAYS show 3 options with emojis:
-   📝 TASK - quick action items
-   📅 EVENT - scheduled meetings or appointments  
-   🎯 GOAL - habits or learning goals
-4. Give specific examples for each type
-5. Keep it friendly and approachable
-6. Use multiple lines and emojis generously
-
-User said: "${text}"
-
-Generate a 4-6 line friendly response with examples for each type!`
-                }]
-              }],
-              generationConfig: { maxOutputTokens: 150, temperature: 0.8 },
-            });
-            const r = res.response.text().trim();
-            if (r && r.length > 30) {
-              // Send improved conversational response
-              sendBloo(replyTo, r, blooNumber, protocol);
-            }
-          }
-        }
-      } catch (err: any) {
-        console.error("[Webhook] Background Gemini error:", err?.message);
-      }
-    })();
+    // Save this exchange to conversation history (enables follow-up pronoun resolution)
+    await saveHistory(admin, userId, text, sentResponse);
 
     console.log("[Webhook] ======== DONE (response sent) ========\n");
     return NextResponse.json({ ok: true }, { status: 200 });
