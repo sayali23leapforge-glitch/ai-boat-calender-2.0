@@ -1270,6 +1270,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
         const updates: any = {};
 
+
         if (a.title !== undefined) updates.title = a.title;
         if (a.description !== undefined) updates.description = a.description;
         if (a.date !== undefined) updates.event_date = a.date;
@@ -1291,6 +1292,11 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
           const dur = parseDurationMinutesFromText(userText) || 60;
           const endHHMM = addMinutesHHMM(a.time, dur);
           updates.end_time = `${normalizeTimeToHHMM(endHHMM)}:00`;
+        }
+
+        if (Object.keys(updates).length === 0) {
+          toast.error("Nothing to update — no fields were changed.");
+          return;
         }
 
         await updateCalendarEvent((ev as any).id, updates);
