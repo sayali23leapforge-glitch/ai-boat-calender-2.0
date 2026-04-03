@@ -3,7 +3,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Sparkles, Send, Loader2, ChevronDown, ChevronUp, Paperclip, X, FileText, Image as ImageIcon } from "lucide-react";
+import { Sparkles, Send, Loader2, ChevronDown, ChevronUp, Paperclip, X, FileText, Image as ImageIcon, History, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -187,6 +187,12 @@ type RecentEntities = {
 };
 
 const RECENT_ENTITIES_LS_KEY = "edge_assistant_recent_entities_v1";
+const CHAT_WIDGET_LEGACY_MESSAGES_LS_KEY_PREFIX = "edge_assistant_chat_widget_messages_v1";
+const CHAT_WIDGET_CONVERSATIONS_LS_KEY_PREFIX = "edge_assistant_chat_widget_conversations_v1";
+const CHAT_WIDGET_ACTIVE_CONVERSATION_LS_KEY_PREFIX = "edge_assistant_chat_widget_active_conversation_v1";
+const CHAT_WIDGET_CONVERSATION_MESSAGES_LS_KEY_PREFIX = "edge_assistant_chat_widget_conversation_messages_v1";
+const AI_CHAT_CONVERSATIONS_TABLE = "ai_chat_conversations";
+const AI_CHAT_MESSAGES_TABLE = "ai_chat_messages";
 
 type ChatMessage =
   | { role: "user" | "assistant"; content: string }
@@ -206,6 +212,161 @@ type ChatMessage =
         toolId?: string;
       };
     };
+
+type ChatConversation = {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+type DbChatConversationRow = {
+  id: string;
+  user_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type DbChatMessageRow = {
+  conversation_id: string;
+  role: "user" | "assistant";
+  content: string;
+  disambiguation: any | null;
+  message_index: number;
+  created_at?: string;
+};
+
+const DEFAULT_CHAT_MESSAGES: ChatMessage[] = [
+  {
+    role: "assistant",
+    content:
+      "Hey 👋 Tell me what you want in natural language.\nExamples:\n• “Create task list: Work”\n• “Create task: Send invoice under list Work”\n• “Meeting Monday 9am with Rahul”\n• “Mark ‘send invoice’ done”\n• “Reschedule ‘Rahul meeting’ to Friday 4pm”",
+  },
+];
+
+function getLegacyChatStorageKey(uid: string) {
+  return `${CHAT_WIDGET_LEGACY_MESSAGES_LS_KEY_PREFIX}:${uid || "anonymous"}`;
+}
+
+function getConversationsStorageKey(uid: string) {
+  return `${CHAT_WIDGET_CONVERSATIONS_LS_KEY_PREFIX}:${uid || "anonymous"}`;
+}
+
+function getActiveConversationStorageKey(uid: string) {
+  return `${CHAT_WIDGET_ACTIVE_CONVERSATION_LS_KEY_PREFIX}:${uid || "anonymous"}`;
+}
+
+function getConversationMessagesStorageKey(uid: string, conversationId: string) {
+  return `${CHAT_WIDGET_CONVERSATION_MESSAGES_LS_KEY_PREFIX}:${uid || "anonymous"}:${conversationId}`;
+}
+
+function makeConversationId() {
+  const g = globalThis as any;
+  if (g?.crypto?.randomUUID) return `conv_${g.crypto.randomUUID()}`;
+  return `conv_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function toTitleText(text: string) {
+  const compact = (text || "").replace(/\s+/g, " ").trim();
+  if (!compact) return "New chat";
+  return compact.length > 56 ? `${compact.slice(0, 56).trim()}...` : compact;
+}
+
+function deriveConversationTitle(messages: ChatMessage[]) {
+  const firstUser = messages.find((m) => m.role === "user" && (m as any).content?.trim());
+  if (firstUser) return toTitleText((firstUser as any).content);
+  const firstAssistant = messages.find(
+    (m) =>
+      m.role === "assistant" &&
+      (m as any).content?.trim() &&
+      !String((m as any).content).startsWith("Hey 👋 Tell me what you want in natural language.")
+  );
+  if (firstAssistant) return toTitleText((firstAssistant as any).content);
+  return "New chat";
+}
+
+function loadChatMessagesFromStorage(uid: string, conversationId: string): ChatMessage[] {
+  if (typeof window === "undefined") return DEFAULT_CHAT_MESSAGES;
+  const raw = window.localStorage.getItem(getConversationMessagesStorageKey(uid, conversationId));
+  if (!raw) return DEFAULT_CHAT_MESSAGES;
+  const parsed = safeJsonParse<any>(raw);
+  if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_CHAT_MESSAGES;
+
+  const normalized = parsed.filter((item) => {
+    if (!item || typeof item !== "object") return false;
+    if (item.role !== "user" && item.role !== "assistant") return false;
+    if (typeof item.content !== "string") return false;
+    return true;
+  }) as ChatMessage[];
+
+  return normalized.length > 0 ? normalized : DEFAULT_CHAT_MESSAGES;
+}
+
+function loadConversationsFromStorage(uid: string): ChatConversation[] {
+  if (typeof window === "undefined") return [];
+  const raw = window.localStorage.getItem(getConversationsStorageKey(uid));
+  if (!raw) return [];
+  const parsed = safeJsonParse<any>(raw);
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .filter((item) => item && typeof item === "object" && typeof item.id === "string")
+    .map((item) => ({
+      id: String(item.id),
+      title: typeof item.title === "string" && item.title.trim() ? item.title : "New chat",
+      createdAt: typeof item.createdAt === "number" ? item.createdAt : Date.now(),
+      updatedAt: typeof item.updatedAt === "number" ? item.updatedAt : Date.now(),
+    }))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+function fromDbConversation(row: DbChatConversationRow): ChatConversation {
+  return {
+    id: row.id,
+    title: row.title || "New chat",
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+    updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : Date.now(),
+  };
+}
+
+function toDbConversation(userId: string, conv: ChatConversation): DbChatConversationRow {
+  return {
+    id: conv.id,
+    user_id: userId,
+    title: conv.title || "New chat",
+    created_at: new Date(conv.createdAt || Date.now()).toISOString(),
+    updated_at: new Date(conv.updatedAt || Date.now()).toISOString(),
+  };
+}
+
+function fromDbMessageRows(rows: DbChatMessageRow[]): ChatMessage[] {
+  const sorted = [...rows].sort((a, b) => a.message_index - b.message_index);
+  const normalized = sorted.map((row) => {
+    if (row.role === "assistant" && row.disambiguation && typeof row.disambiguation === "object") {
+      return {
+        role: "assistant" as const,
+        content: row.content || "",
+        disambiguation: row.disambiguation,
+      };
+    }
+    return {
+      role: row.role,
+      content: row.content || "",
+    } as ChatMessage;
+  });
+  return normalized.length > 0 ? normalized : DEFAULT_CHAT_MESSAGES;
+}
+
+function toDbMessageRows(userId: string, conversationId: string, messages: ChatMessage[]): DbChatMessageRow[] {
+  return messages.map((m, idx) => ({
+    conversation_id: conversationId,
+    role: m.role,
+    content: (m as any).content || "",
+    disambiguation: m.role === "assistant" && (m as any).disambiguation ? (m as any).disambiguation : null,
+    message_index: idx,
+    created_at: new Date().toISOString(),
+  })) as DbChatMessageRow[];
+}
 
 function normalizeName(s: string) {
   return (s || "").trim().toLowerCase();
@@ -497,13 +658,13 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
   const [resolvedUserId, setResolvedUserId] = useState<string>(userId || "");
 
-  const [chat, setChat] = useState<ChatMessage[]>([
-    {
-      role: "assistant",
-      content:
-        "Hey 👋 Tell me what you want in natural language.\nExamples:\n• “Create task list: Work”\n• “Create task: Send invoice under list Work”\n• “Meeting Monday 9am with Rahul”\n• “Mark ‘send invoice’ done”\n• “Reschedule ‘Rahul meeting’ to Friday 4pm”",
-    },
-  ]);
+  const [chat, setChat] = useState<ChatMessage[]>(DEFAULT_CHAT_MESSAGES);
+  const [conversations, setConversations] = useState<ChatConversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [loadedMessagesKey, setLoadedMessagesKey] = useState<string | null>(null);
+  const [historyHydrated, setHistoryHydrated] = useState(false);
+  const skipConversationMetaSyncRef = useRef(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -524,6 +685,35 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
         .map((m) => ({ role: m.role, content: (m as any).content })),
     [chat]
   );
+  const ownerKey = useMemo(() => resolvedUserId || userId || "anonymous", [resolvedUserId, userId]);
+  const conversationMessagesKey = useMemo(
+    () => (activeConversationId ? getConversationMessagesStorageKey(ownerKey, activeConversationId) : null),
+    [ownerKey, activeConversationId]
+  );
+  const canUseDbHistory = ownerKey !== "anonymous";
+  const activeConversationTitle = useMemo(
+    () => conversations.find((c) => c.id === activeConversationId)?.title || "New chat",
+    [conversations, activeConversationId]
+  );
+
+  async function loadMessagesForConversation(conversationId: string) {
+    if (!canUseDbHistory) return loadChatMessagesFromStorage(ownerKey, conversationId);
+    try {
+      const { data, error } = await supabase
+        .from(AI_CHAT_MESSAGES_TABLE)
+        .select("conversation_id, role, content, disambiguation, message_index, created_at")
+        .eq("user_id", ownerKey)
+        .eq("conversation_id", conversationId)
+        .order("message_index", { ascending: true });
+      if (error) throw error;
+      if (Array.isArray(data) && data.length > 0) {
+        return fromDbMessageRows(data as DbChatMessageRow[]);
+      }
+    } catch (err) {
+      console.warn("[ChatWidget] Failed to load messages from DB, falling back to localStorage", err);
+    }
+    return loadChatMessagesFromStorage(ownerKey, conversationId);
+  }
 
   function setRecentEntities(patch: Partial<RecentEntities>) {
     const next: RecentEntities = {
@@ -679,11 +869,216 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    let cancelled = false;
+
+    async function hydrateHistory() {
+      setHistoryHydrated(false);
+
+      const existingLocalConversations = loadConversationsFromStorage(ownerKey);
+      const legacyMessagesRaw = window.localStorage.getItem(getLegacyChatStorageKey(ownerKey));
+      const legacyMessages = legacyMessagesRaw ? safeJsonParse<any>(legacyMessagesRaw) : null;
+
+      let nextConversations: ChatConversation[] = [];
+
+      if (canUseDbHistory) {
+        try {
+          const { data: dbConversations, error } = await supabase
+            .from(AI_CHAT_CONVERSATIONS_TABLE)
+            .select("id, user_id, title, created_at, updated_at")
+            .eq("user_id", ownerKey)
+            .order("updated_at", { ascending: false });
+          if (error) throw error;
+          nextConversations = (dbConversations || []).map((row) => fromDbConversation(row as DbChatConversationRow));
+        } catch (err) {
+          console.warn("[ChatWidget] Failed to load conversations from DB, falling back to localStorage", err);
+        }
+      }
+
+      if (nextConversations.length === 0) {
+        nextConversations = existingLocalConversations;
+      }
+
+      if (nextConversations.length === 0) {
+        const now = Date.now();
+        const convId = makeConversationId();
+        const seededMessages =
+          Array.isArray(legacyMessages) && legacyMessages.length > 0
+            ? (legacyMessages as ChatMessage[])
+            : DEFAULT_CHAT_MESSAGES;
+        nextConversations = [
+          {
+            id: convId,
+            title: deriveConversationTitle(seededMessages),
+            createdAt: now,
+            updatedAt: now,
+          },
+        ];
+        try {
+          window.localStorage.setItem(getConversationsStorageKey(ownerKey), JSON.stringify(nextConversations));
+          window.localStorage.setItem(getConversationMessagesStorageKey(ownerKey, convId), JSON.stringify(seededMessages));
+        } catch {
+          // ignore
+        }
+      }
+
+      const savedActive = window.localStorage.getItem(getActiveConversationStorageKey(ownerKey));
+      const activeId: string =
+        savedActive && nextConversations.some((c) => c.id === savedActive)
+          ? savedActive
+          : nextConversations[0].id;
+
+      const nextMessages = await loadMessagesForConversation(activeId);
+      if (cancelled) return;
+
+      skipConversationMetaSyncRef.current = true;
+      setConversations(nextConversations);
+      setActiveConversationId(activeId);
+      setChat(nextMessages);
+      setLoadedMessagesKey(getConversationMessagesStorageKey(ownerKey, activeId));
+      setHistoryHydrated(true);
+    }
+
+    void hydrateHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [ownerKey, canUseDbHistory]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!historyHydrated) return;
+    if (!conversationMessagesKey) return;
+    if (loadedMessagesKey !== conversationMessagesKey) return;
+    try {
+      window.localStorage.setItem(conversationMessagesKey, JSON.stringify(chat));
+    } catch {
+      // ignore quota/storage exceptions
+    }
+  }, [chat, conversationMessagesKey, loadedMessagesKey, historyHydrated]);
+
+  useEffect(() => {
+    if (!historyHydrated) return;
+    if (!canUseDbHistory) return;
+    if (!activeConversationId) return;
+    if (loadedMessagesKey !== conversationMessagesKey) return;
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const rows = toDbMessageRows(ownerKey, activeConversationId, chat);
+        if (rows.length === 0) return;
+        const { error } = await supabase
+          .from(AI_CHAT_MESSAGES_TABLE)
+          .upsert(rows.map((row) => ({ ...row, user_id: ownerKey })), {
+            onConflict: "conversation_id,message_index",
+          });
+        if (error) throw error;
+      } catch (err) {
+        console.warn("[ChatWidget] Failed to persist messages to DB", err);
+      }
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    chat,
+    ownerKey,
+    activeConversationId,
+    historyHydrated,
+    canUseDbHistory,
+    loadedMessagesKey,
+    conversationMessagesKey,
+  ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!historyHydrated) return;
+    try {
+      window.localStorage.setItem(getConversationsStorageKey(ownerKey), JSON.stringify(conversations));
+    } catch {
+      // ignore
+    }
+  }, [conversations, ownerKey, historyHydrated]);
+
+  useEffect(() => {
+    if (!historyHydrated) return;
+    if (!canUseDbHistory) return;
+    if (conversations.length === 0) return;
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const rows = conversations.map((conv) => toDbConversation(ownerKey, conv));
+        const { error } = await supabase.from(AI_CHAT_CONVERSATIONS_TABLE).upsert(rows, { onConflict: "id" });
+        if (error) throw error;
+      } catch (err) {
+        console.warn("[ChatWidget] Failed to persist conversations to DB", err);
+      }
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [conversations, ownerKey, historyHydrated, canUseDbHistory]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!historyHydrated) return;
+    if (!activeConversationId) return;
+    try {
+      window.localStorage.setItem(getActiveConversationStorageKey(ownerKey), activeConversationId);
+    } catch {
+      // ignore
+    }
+  }, [ownerKey, activeConversationId, historyHydrated]);
+
+  useEffect(() => {
     const t = setTimeout(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
     }, 50);
     return () => clearTimeout(t);
   }, [chat.length]);
+
+  useEffect(() => {
+    if (!activeConversationId) return;
+    if (skipConversationMetaSyncRef.current) {
+      skipConversationMetaSyncRef.current = false;
+      return;
+    }
+    const title = deriveConversationTitle(chat);
+    const now = Date.now();
+    setConversations((prev) => {
+      const next = prev.map((conv) =>
+        conv.id === activeConversationId ? { ...conv, title, updatedAt: now } : conv
+      );
+      next.sort((a, b) => b.updatedAt - a.updatedAt);
+      return next;
+    });
+  }, [chat, activeConversationId]);
+
+  function startNewConversation() {
+    const now = Date.now();
+    const id = makeConversationId();
+    const nextConversation: ChatConversation = {
+      id,
+      title: "New chat",
+      createdAt: now,
+      updatedAt: now,
+    };
+    setConversations((prev) => [nextConversation, ...prev]);
+    setActiveConversationId(id);
+    setChat(DEFAULT_CHAT_MESSAGES);
+    setLoadedMessagesKey(getConversationMessagesStorageKey(ownerKey, id));
+    setOpen(true);
+  }
+
+  async function selectConversation(conversationId: string) {
+    if (conversationId === activeConversationId) {
+      return;
+    }
+    const nextMessages = await loadMessagesForConversation(conversationId);
+    skipConversationMetaSyncRef.current = true;
+    setActiveConversationId(conversationId);
+    setChat(nextMessages);
+    setLoadedMessagesKey(getConversationMessagesStorageKey(ownerKey, conversationId));
+    setOpen(true);
+  }
 
   function pushAssistantText(text: string) {
     setChat((prev) => [...prev, { role: "assistant", content: text }]);
@@ -1664,9 +2059,11 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
       
       // Handle silent mode (no assistant message, just toast)
       if (data?.silentMode) {
+        const completionMessage = data?.successMessage || "Done - I've handled that.";
         if (data?.successMessage) {
           toast.success(data.successMessage, { duration: 2000 });
         }
+        setChat((prev) => [...prev, { role: "assistant", content: completionMessage }]);
       } else if (assistantText.trim()) {
         setChat((prev) => [...prev, { role: "assistant", content: assistantText }]);
       }
@@ -1694,7 +2091,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
   }
 
   return (
-    <div className="fixed right-4 bottom-4 z-[9999] w-[380px] max-w-[92vw]">
+    <div className="fixed right-4 bottom-4 z-[9999] w-[520px] max-w-[96vw]">
       <div className="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-xl shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border/60 bg-muted/30">
@@ -1712,31 +2109,78 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
                   </span>
                 )}
               </div>
-              <div className="text-xs text-muted-foreground">
-                {iMessageConnected ? 'Connected to iMessage' : 'Chat to control Tasks / Calendar / Goals'}
+              <div className="text-xs font-medium text-muted-foreground truncate max-w-[180px]">
+                {activeConversationTitle}
+              </div>
+              <div className="text-[11px] text-muted-foreground">
+                {iMessageConnected ? "Connected to iMessage" : "Chat to control Tasks / Calendar / Goals"}
               </div>
             </div>
           </div>
 
-          <Button variant="ghost" size="sm" className="rounded-xl" onClick={() => setOpen((v) => !v)}>
-            {open ? (
-              <>
-                <ChevronDown className="h-4 w-4 mr-1" />
-                Minimize
-              </>
-            ) : (
-              <>
-                <ChevronUp className="h-4 w-4 mr-1" />
-                Open
-              </>
-            )}
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="icon" className="rounded-xl h-8 w-8" onClick={startNewConversation} title="New chat">
+              <Plus className="h-4 w-4" />
+            </Button>
+            <Button
+              variant={showHistory ? "secondary" : "ghost"}
+              size="icon"
+              className="rounded-xl h-8 w-8"
+              onClick={() => setShowHistory((v) => !v)}
+              title={showHistory ? "Hide history" : "Show history"}
+            >
+              <History className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="sm" className="rounded-xl" onClick={() => setOpen((v) => !v)}>
+              {open ? (
+                <>
+                  <ChevronDown className="h-4 w-4 mr-1" />
+                  Minimize
+                </>
+              ) : (
+                <>
+                  <ChevronUp className="h-4 w-4 mr-1" />
+                  Open
+                </>
+              )}
+            </Button>
+          </div>
         </div>
 
         {/* Body */}
         {open && (
           <>
-            <div ref={scrollRef} className="max-h-[340px] overflow-y-auto px-4 py-3 space-y-3">
+            <div className="flex max-h-[340px] min-h-[340px]">
+              {showHistory && (
+                <aside className="w-[168px] border-r border-border/60 bg-muted/20 flex flex-col">
+                  <div className="px-3 py-2 border-b border-border/60">
+                    <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">History</div>
+                  </div>
+                  <div className="overflow-y-auto p-1">
+                    {conversations.length === 0 ? (
+                      <div className="px-2 py-2 text-xs text-muted-foreground">No chats yet</div>
+                    ) : (
+                      conversations.map((conv) => (
+                        <button
+                          key={conv.id}
+                          type="button"
+                          onClick={() => void selectConversation(conv.id)}
+                          className={cn(
+                            "w-full text-left px-2.5 py-2 rounded-lg transition-colors mb-1",
+                            conv.id === activeConversationId ? "bg-primary/10 border border-primary/20" : "hover:bg-muted/70"
+                          )}
+                        >
+                          <div className="text-xs font-medium truncate">{conv.title}</div>
+                          <div className="text-[10px] text-muted-foreground mt-0.5">
+                            {new Date(conv.updatedAt).toLocaleString()}
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </aside>
+              )}
+            <div ref={scrollRef} className="flex-1 min-w-0 overflow-y-auto px-4 py-3 space-y-3">
               {chat.map((m, idx) => {
                 const hasDisambig = (m as any).disambiguation;
 
@@ -1788,6 +2232,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
                   </div>
                 );
               })}
+            </div>
             </div>
 
             {/* Composer */}
