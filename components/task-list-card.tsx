@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
+import { Input } from "@/components/ui/input"
 import { MoreVertical, Plus, Pencil, Trash2, Sparkles, Loader2 } from "lucide-react"
 import {
   DropdownMenu,
@@ -12,30 +12,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { TaskCard } from "./task-card"
-import { type Task } from "@/lib/tasks"
+import { type Task, type TaskPriority } from "@/lib/tasks"
 import { type TaskList } from "@/lib/task-lists"
+import { cn } from "@/lib/utils"
 import { AIQuickCreate } from "./ai-quick-create"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 interface TaskListCardProps {
   list: TaskList
   tasks: Task[]
-  onAddTask: (
-    listId: string,
-    title: string,
-    options?: {
-      notes?: string
-      dueDate?: string
-      dueTime?: string
-      isStarred?: boolean
-      estimatedHours?: number | null
-      progress?: number
-      goal?: string
-      location?: string
-    }
-  ) => Promise<boolean>
+  onAddTask: (listId: string, title: string, options?: { priority?: TaskPriority }) => void | Promise<void>
   onToggleComplete: (taskId: string, isCompleted: boolean) => void
   onToggleStarred: (taskId: string, isStarred: boolean) => void
   onTaskClick: (task: Task) => void
@@ -57,52 +44,27 @@ export function TaskListCard({
   userId,
   onRefresh,
 }: TaskListCardProps) {
-  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
+  const [isAddingTask, setIsAddingTask] = useState(false)
+  const [isSubmittingTask, setIsSubmittingTask] = useState(false)
   const [newTaskTitle, setNewTaskTitle] = useState("")
-  const [newTaskNotes, setNewTaskNotes] = useState("")
-  const [newTaskDueDate, setNewTaskDueDate] = useState("")
-  const [newTaskDueTime, setNewTaskDueTime] = useState("")
-  const [newTaskIsStarred, setNewTaskIsStarred] = useState(false)
-  const [newTaskEstimatedHours, setNewTaskEstimatedHours] = useState("")
-  const [newTaskProgress, setNewTaskProgress] = useState(0)
-  const [newTaskGoal, setNewTaskGoal] = useState("")
-  const [newTaskLocation, setNewTaskLocation] = useState("")
   const [showAICreate, setShowAICreate] = useState(false)
-  const [isCreatingTask, setIsCreatingTask] = useState(false)
-
-  const resetCreateForm = () => {
-    setNewTaskTitle("")
-    setNewTaskNotes("")
-    setNewTaskDueDate("")
-    setNewTaskDueTime("")
-    setNewTaskIsStarred(false)
-    setNewTaskEstimatedHours("")
-    setNewTaskProgress(0)
-    setNewTaskGoal("")
-    setNewTaskLocation("")
-  }
+  const [newTaskPriority, setNewTaskPriority] = useState<TaskPriority>("medium")
 
   const handleAddTask = async () => {
-    if (!newTaskTitle.trim()) return
+    if (isSubmittingTask) return
+    const title = newTaskTitle.trim()
+    if (!title) return
 
-    const estimatedHours = newTaskEstimatedHours ? Number(newTaskEstimatedHours) : null
-
-    setIsCreatingTask(true)
-    const created = await onAddTask(list.id, newTaskTitle.trim(), {
-      notes: newTaskNotes.trim() || undefined,
-      dueDate: newTaskDueDate || undefined,
-      dueTime: newTaskDueTime || undefined,
-      isStarred: newTaskIsStarred,
-      estimatedHours,
-      progress: newTaskProgress,
-      goal: newTaskGoal.trim() || undefined,
-      location: newTaskLocation.trim() || undefined,
-    })
-    setIsCreatingTask(false)
-
-    if (created) {
-      resetCreateForm()
-      setIsCreateModalOpen(false)
+    setIsSubmittingTask(true)
+    try {
+      await Promise.resolve(onAddTask(list.id, title, { priority: newTaskPriority }))
+      setNewTaskTitle("")
+      setNewTaskPriority("medium")
+      setIsAddingTask(false)
+    } catch {
+      // Parent should toast; keep form open for retry
+    } finally {
+      setIsSubmittingTask(false)
     }
   }
 
@@ -175,26 +137,95 @@ export function TaskListCard({
           </div>
         )}
 
-        <div className="flex gap-2 mt-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="flex-1 justify-start text-muted-foreground hover:text-foreground hover:bg-accent transition-all duration-200 rounded-lg"
-            onClick={() => setIsCreateModalOpen(true)}
-          >
-            <Plus className="h-4 w-4 mr-2 transition-transform duration-200 group-hover:rotate-90" />
-            Add a task
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-primary hover:text-primary hover:bg-primary/10 rounded-lg transition-all duration-200 hover:scale-110"
-            onClick={() => setShowAICreate(true)}
-            title="Quick create with AI"
-          >
-            <Sparkles className="h-4 w-4" />
-          </Button>
-        </div>
+        {isAddingTask ? (
+          <div className="pt-2 space-y-3">
+            <div className="relative">
+              <Input
+                value={newTaskTitle}
+                onChange={(e) => setNewTaskTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (isSubmittingTask) {
+                    e.preventDefault()
+                    return
+                  }
+                  if (e.key === "Enter") {
+                    e.preventDefault()
+                    void handleAddTask()
+                  }
+                  if (e.key === "Escape" && !isSubmittingTask) {
+                    setIsAddingTask(false)
+                    setNewTaskTitle("")
+                  }
+                }}
+                placeholder="Task title"
+                className="h-9 text-sm pr-10"
+                autoFocus
+                disabled={isSubmittingTask}
+                aria-busy={isSubmittingTask}
+              />
+              {isSubmittingTask && (
+                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none">
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Label className="text-xs text-muted-foreground font-medium">Priority</Label>
+              <Select
+                value={newTaskPriority}
+                onValueChange={(value) => setNewTaskPriority(value as TaskPriority)}
+                disabled={isSubmittingTask}
+              >
+                <SelectTrigger className="h-8 text-xs w-[min(100%,11rem)]" disabled={isSubmittingTask}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="critical">Critical</SelectItem>
+                  <SelectItem value="high">High</SelectItem>
+                  <SelectItem value="medium">Medium</SelectItem>
+                  <SelectItem value="low">Low</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                type="button"
+                size="sm"
+                className="h-8 ml-auto"
+                onClick={() => void handleAddTask()}
+                disabled={isSubmittingTask || !newTaskTitle.trim()}
+              >
+                {isSubmittingTask ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                    Adding…
+                  </>
+                ) : (
+                  "Add task"
+                )}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex gap-2 mt-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="flex-1 justify-start text-muted-foreground hover:text-foreground hover:bg-accent transition-all duration-200 rounded-lg"
+              onClick={() => setIsAddingTask(true)}
+            >
+              <Plus className="h-4 w-4 mr-2 transition-transform duration-200 group-hover:rotate-90" />
+              Add a task
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-primary hover:text-primary hover:bg-primary/10 rounded-lg transition-all duration-200 hover:scale-110"
+              onClick={() => setShowAICreate(true)}
+              title="Quick create with AI"
+            >
+              <Sparkles className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
 
         <AIQuickCreate
           isOpen={showAICreate}
@@ -205,158 +236,6 @@ export function TaskListCard({
             onRefresh?.()
           }}
         />
-
-        <Dialog
-          open={isCreateModalOpen}
-          onOpenChange={(open) => {
-            setIsCreateModalOpen(open)
-            if (!open) resetCreateForm()
-          }}
-        >
-          <DialogContent className="sm:max-w-[525px]">
-            <DialogHeader>
-              <DialogTitle>Create Task</DialogTitle>
-            </DialogHeader>
-
-            <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <Label htmlFor={`create-title-${list.id}`}>Title</Label>
-                <Input
-                  id={`create-title-${list.id}`}
-                  value={newTaskTitle}
-                  onChange={(e) => setNewTaskTitle(e.target.value)}
-                  placeholder="Task title"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor={`create-notes-${list.id}`}>Notes</Label>
-                <Textarea
-                  id={`create-notes-${list.id}`}
-                  value={newTaskNotes}
-                  onChange={(e) => setNewTaskNotes(e.target.value)}
-                  placeholder="Add detailed notes..."
-                  rows={4}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor={`create-due-date-${list.id}`}>Due Date & Time</Label>
-                <div className="flex items-center gap-2">
-                  <Input
-                    id={`create-due-date-${list.id}`}
-                    type="date"
-                    value={newTaskDueDate}
-                    onChange={(e) => setNewTaskDueDate(e.target.value)}
-                  />
-                  <Input
-                    id={`create-due-time-${list.id}`}
-                    type="time"
-                    value={newTaskDueTime}
-                    onChange={(e) => setNewTaskDueTime(e.target.value)}
-                    className="w-32"
-                  />
-                  {(newTaskDueDate || newTaskDueTime) && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setNewTaskDueDate("")
-                        setNewTaskDueTime("")
-                      }}
-                    >
-                      Clear
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-2">
-              <div className="space-y-2">
-                <Label htmlFor={`create-estimated-hours-${list.id}`}>Estimated hours</Label>
-                <Input
-                  id={`create-estimated-hours-${list.id}`}
-                  type="number"
-                  min="0"
-                  step="0.5"
-                  placeholder="e.g. 2.5"
-                  value={newTaskEstimatedHours}
-                  onChange={(e) => setNewTaskEstimatedHours(e.target.value)}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Priority level</Label>
-                <Input value="Auto (AI classified)" readOnly className="bg-muted/50" />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-2">
-              <div className="space-y-2">
-                <Label htmlFor={`create-goal-${list.id}`}>Goal</Label>
-                <Input
-                  id={`create-goal-${list.id}`}
-                  value={newTaskGoal}
-                  onChange={(e) => setNewTaskGoal(e.target.value)}
-                  placeholder="What is this task driving?"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor={`create-location-${list.id}`}>Location</Label>
-                <Input
-                  id={`create-location-${list.id}`}
-                  value={newTaskLocation}
-                  onChange={(e) => setNewTaskLocation(e.target.value)}
-                  placeholder="Optional location"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor={`create-progress-${list.id}`}>Progress (%)</Label>
-              <div className="flex items-center gap-4">
-                <input
-                  id={`create-progress-${list.id}`}
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={newTaskProgress}
-                  onChange={(e) => setNewTaskProgress(Number(e.target.value))}
-                  className="flex-1"
-                />
-                <span className="text-sm text-muted-foreground w-12 text-right">{newTaskProgress}%</span>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 py-2">
-              <input
-                id={`create-starred-${list.id}`}
-                type="checkbox"
-                checked={newTaskIsStarred}
-                onChange={(e) => setNewTaskIsStarred(e.target.checked)}
-              />
-              <Label htmlFor={`create-starred-${list.id}`}>Mark as starred</Label>
-            </div>
-
-            <DialogFooter className="flex justify-end">
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={() => setIsCreateModalOpen(false)} disabled={isCreatingTask}>
-                  Cancel
-                </Button>
-                <Button onClick={handleAddTask} disabled={!newTaskTitle.trim() || isCreatingTask}>
-                  {isCreatingTask ? (
-                    <>
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Creating...
-                    </>
-                  ) : (
-                    "Create Task"
-                  )}
-                </Button>
-              </div>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
       </CardContent>
     </Card>
   )

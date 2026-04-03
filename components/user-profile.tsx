@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabase"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
-import { Mail, Phone, Calendar, CheckSquare, Target, Edit2, Save, X, Mic, Copy, Check, Smartphone } from "lucide-react"
+import { Mail, Phone, Calendar, CheckSquare, Target, Edit2, Save, X } from "lucide-react"
 
 interface UserStats {
   tasksCount: number
@@ -16,45 +16,15 @@ interface UserStats {
 export function UserProfile() {
   const [user, setUser] = useState<any>(null)
   const [phone, setPhone] = useState("")
-  const [blooNumber, setBlooNumber] = useState("")
   const [imessageConnected, setImessageConnected] = useState(false)
   const [editingPhone, setEditingPhone] = useState(false)
   const [newPhone, setNewPhone] = useState("")
-  const [editingBloo, setEditingBloo] = useState(false)
-  const [newBlooNumber, setNewBlooNumber] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [stats, setStats] = useState<UserStats>({ tasksCount: 0, goalsCount: 0, eventsCount: 0 })
-  const [copiedUserId, setCopiedUserId] = useState(false)
 
   useEffect(() => {
     loadUserData()
   }, [])
-
-  const refreshBlooNumber = async () => {
-    try {
-      console.log('[Frontend] 🔄 Refreshing Bloo number...')
-      const response = await fetch(`/api/bloo/number?t=${Date.now()}`, {
-        cache: 'no-store',
-      })
-      if (response.ok) {
-        const data = await response.json()
-        console.log('[Frontend] ✅ Refreshed Bloo number:', data.blooNumber)
-        if (data.blooNumber) {
-          setBlooNumber(data.blooNumber)
-          setNewBlooNumber(data.blooNumber)
-          toast.success('Bloo number updated!')
-        } else {
-          toast.error('No Bloo number found')
-        }
-      } else {
-        console.error('[Frontend] Failed to refresh:', response.status)
-        toast.error('Failed to refresh Bloo number')
-      }
-    } catch (error) {
-      console.error('[Frontend] Refresh error:', error)
-      toast.error('Error refreshing Bloo number')
-    }
-  }
 
   const loadUserData = async () => {
     try {
@@ -84,31 +54,6 @@ export function UserProfile() {
         console.log("[Frontend] Phone loaded:", phoneData.phone)
         setPhone(phoneData.phone || "")
         setNewPhone(phoneData.phone || "")
-      }
-
-      // Get latest Bloo number from webhook endpoint
-      console.log('[Frontend] 🔄 Loading latest Bloo number...')
-      const blooResponse = await fetch(`/api/bloo/number?t=${Date.now()}`, {
-        cache: 'no-store',
-        headers: {
-          'Pragma': 'no-cache',
-          'Cache-Control': 'no-cache, no-store',
-        }
-      })
-      if (blooResponse.ok) {
-        const blooData = await blooResponse.json()
-        console.log('[Frontend] ✅ Latest Bloo number response:', blooData)
-        if (blooData.blooNumber) {
-          console.log('[Frontend] ✅ Setting Bloo number:', blooData.blooNumber)
-          setBlooNumber(blooData.blooNumber)
-          setNewBlooNumber(blooData.blooNumber)
-        } else {
-          console.warn('[Frontend] No blooNumber in response')
-          setBlooNumber(null)
-        }
-      } else {
-        console.error('[Frontend] Failed to fetch Bloo number:', blooResponse.status, blooResponse.statusText)
-        setBlooNumber(null)
       }
 
       // Get stats
@@ -173,40 +118,13 @@ export function UserProfile() {
       }
 
       console.log("[Frontend] Update successful!")
+      toast.success("📱 Phone number updated!")
       
       // Set the normalized phone that was saved (from API response)
       const savedPhone = responseData.phone
       setPhone(savedPhone)
       setNewPhone(savedPhone)
       setEditingPhone(false)
-
-      // Send welcome message
-      try {
-        const welcomeResponse = await fetch("/api/user/welcome-message", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify({ phone: savedPhone }),
-        })
-
-        if (welcomeResponse.ok) {
-          const welcomeData = await welcomeResponse.json()
-          
-          if (welcomeData.sent) {
-            toast.success("✅ Welcome message sent to your phone!")
-          } else {
-            toast.success("📱 Phone number updated!")
-            toast.message("Welcome message preview:\n\n" + welcomeData.welcomeMessage, { duration: 8000 })
-          }
-        } else {
-          toast.success("📱 Phone number updated!")
-        }
-      } catch (welcomeError) {
-        console.error("[Frontend] Error sending welcome message:", welcomeError)
-        toast.success("📱 Phone number updated!")
-      }
     } catch (error) {
       console.error("[Frontend] Exception:", error)
       const errorMsg = error instanceof Error ? error.message : "Failed to update phone number"
@@ -221,74 +139,6 @@ export function UserProfile() {
     setEditingPhone(false)
   }
 
-  const handleSaveBloo = async () => {
-    if (!newBlooNumber) {
-      toast.error("Please enter a Bloo number")
-      return
-    }
-
-    if (!user) {
-      toast.error("Not logged in")
-      return
-    }
-
-    try {
-      setIsLoading(true)
-
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession()
-      if (sessionError || !session) {
-        toast.error("Not authenticated")
-        return
-      }
-
-      console.log("[Frontend] Saving Bloo number:", newBlooNumber)
-
-      const response = await fetch("/api/user/bloo", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({ blooNumber: newBlooNumber }),
-      })
-
-      const responseData = await response.json()
-      console.log("[Frontend] Bloo response:", responseData)
-
-      if (!response.ok) {
-        const errorMsg = responseData.error || "Failed to save Bloo number"
-        console.error("[Frontend] Save failed:", errorMsg)
-        toast.error(errorMsg)
-        return
-      }
-
-      console.log("[Frontend] Bloo number saved!")
-      const savedBlooNumber = responseData.blooNumber
-      setBlooNumber(savedBlooNumber)
-      setNewBlooNumber(savedBlooNumber)
-      setEditingBloo(false)
-      toast.success("✅ Bloo number saved! Incoming messages will now create tasks.")
-    } catch (error) {
-      console.error("[Frontend] Exception:", error)
-      const errorMsg = error instanceof Error ? error.message : "Failed to save Bloo number"
-      toast.error(errorMsg)
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleCopyUserId = () => {
-    if (!user?.id) return
-    navigator.clipboard.writeText(user.id)
-    setCopiedUserId(true)
-    setTimeout(() => setCopiedUserId(false), 2000)
-  }
-
-  const handleCancelBloo = () => {
-    setNewBlooNumber(blooNumber)
-    setEditingBloo(false)
-  }
-
   if (!user) {
     return (
       <div className="flex items-center justify-center h-screen">
@@ -300,23 +150,23 @@ export function UserProfile() {
   return (
     <div className="h-full bg-background flex flex-col">
       <div className="flex-1 overflow-y-auto">
-        <div className="p-4 md:p-8">
-          <div className="max-w-2xl mx-auto space-y-6 md:space-y-8">
+        <div className="p-8">
+          <div className="max-w-2xl mx-auto space-y-8">
         {/* Header */}
         <div className="space-y-2">
-          <h1 className="text-2xl md:text-4xl font-bold">Account Settings</h1>
-          <p className="text-muted-foreground text-sm md:text-base">Manage your account and iMessage integration</p>
+          <h1 className="text-4xl font-bold">Account Settings</h1>
+          <p className="text-muted-foreground">Manage your account and iMessage integration</p>
         </div>
 
         {/* Profile Card */}
-        <div className="border border-border/50 rounded-lg p-4 md:p-8 glass-strong backdrop-blur-xl space-y-6">
+        <div className="border border-border/50 rounded-lg p-8 glass-strong backdrop-blur-xl space-y-6">
           {/* Email Section */}
           <div className="space-y-2">
-            <label className="text-xs md:text-sm font-semibold text-foreground flex items-center gap-2">
+            <label className="text-sm font-semibold text-foreground flex items-center gap-2">
               <Mail className="h-4 w-4 text-primary" />
               Email Address
             </label>
-            <div className="bg-muted/50 border border-border/30 rounded-lg p-3 text-foreground font-medium text-sm">
+            <div className="bg-muted/50 border border-border/30 rounded-lg p-3 text-foreground font-medium">
               {user.email}
             </div>
             <p className="text-xs text-muted-foreground">Your registered email cannot be changed</p>
@@ -324,21 +174,21 @@ export function UserProfile() {
 
           {/* Phone Section - iMessage Number */}
           <div className="space-y-2 pt-4 border-t border-border/30">
-            <label className="text-xs md:text-sm font-semibold text-foreground flex items-center gap-2">
+            <label className="text-sm font-semibold text-foreground flex items-center gap-2">
               <Phone className="h-4 w-4 text-primary" />
               iMessage Phone Number
             </label>
             
             {!editingPhone ? (
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-muted/50 border border-border/30 rounded-lg p-3">
-                <span className="font-medium text-foreground text-sm break-all">
+              <div className="flex items-center justify-between bg-muted/50 border border-border/30 rounded-lg p-3">
+                <span className="font-medium text-foreground">
                   {phone || "No phone number set"}
                 </span>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setEditingPhone(true)}
-                  className="gap-2 w-full md:w-auto"
+                  className="gap-2"
                 >
                   <Edit2 className="h-4 w-4" />
                   Edit
@@ -348,17 +198,17 @@ export function UserProfile() {
               <div className="space-y-3">
                 <Input
                   type="tel"
-                  placeholder="+1 XXXXXXXXXX"
+                  placeholder="+91 XXXXXXXXXX"
                   value={newPhone}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewPhone(e.target.value)}
+                  onChange={(e) => setNewPhone(e.target.value)}
                   disabled={isLoading}
-                  className="font-medium text-sm"
+                  className="font-medium"
                 />
-                <div className="flex flex-col sm:flex-row gap-2">
+                <div className="flex gap-2">
                   <Button
                     onClick={handleSavePhone}
                     disabled={isLoading}
-                    className="gap-2 flex-1"
+                    className="gap-2"
                   >
                     <Save className="h-4 w-4" />
                     {isLoading ? "Saving..." : "Save Number"}
@@ -367,7 +217,7 @@ export function UserProfile() {
                     variant="outline"
                     onClick={handleCancel}
                     disabled={isLoading}
-                    className="gap-2 flex-1"
+                    className="gap-2"
                   >
                     <X className="h-4 w-4" />
                     Cancel
@@ -376,192 +226,53 @@ export function UserProfile() {
               </div>
             )}
             <p className="text-xs text-muted-foreground">
-              Use E.164 format (e.g., +1 2025551234). This number will receive iMessage and create tasks/goals/events automatically.
-            </p>
-          </div>
-
-          {/* Bloo Number Section - For Incoming Messages */}
-          <div className="space-y-2 pt-4 border-t border-border/30">
-            <label className="text-xs md:text-sm font-semibold text-foreground flex items-center gap-2">
-              <Phone className="h-4 w-4 text-blue-500" />
-              Bloo Bound Number (Optional)
-            </label>
-            
-            {!editingBloo ? (
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 bg-muted/50 border border-border/30 rounded-lg p-3">
-                <div className="flex-1">
-                  <span className="font-medium text-foreground text-sm break-all">
-                    {blooNumber ? `${blooNumber}` : "⏳ Loading..."}
-                  </span>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {blooNumber 
-                      ? "✓ Auto-synced from Bloo. Messages here create tasks." 
-                      : "Set up Bloo webhook to auto-sync"}
-                  </p>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={refreshBlooNumber}
-                  className="gap-2 w-full md:w-auto"
-                  title="Refresh Bloo number from webhook storage"
-                >
-                  <span>🔄</span>
-                  Refresh
-                </Button>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <Input
-                  type="tel"
-                  placeholder="+1 (424) 513-4881"
-                  value={newBlooNumber}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewBlooNumber(e.target.value)}
-                  disabled={isLoading}
-                  className="font-medium text-sm"
-                />
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <Button
-                    onClick={handleSaveBloo}
-                    disabled={isLoading}
-                    className="gap-2 flex-1"
-                  >
-                    <Save className="h-4 w-4" />
-                    {isLoading ? "Saving..." : "Save Bloo Number"}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={handleCancelBloo}
-                    disabled={isLoading}
-                    className="gap-2 flex-1"
-                  >
-                    <X className="h-4 w-4" />
-                    Cancel
-                  </Button>
-                </div>
-              </div>
-            )}
-            <p className="text-xs text-muted-foreground">
-              The phone number Bloo assigned to you (e.g., +1 (424) 513-4881). When someone texts this number, it creates a task in your calendar.
+              Use E.164 format (e.g., +91 1234567890). This number will receive iMessage and create tasks/goals/events automatically.
             </p>
           </div>
 
           {/* Stats Section */}
           <div className="space-y-3 pt-4 border-t border-border/30">
-            <h3 className="text-xs md:text-sm font-semibold text-foreground">Your Activity</h3>
-            <div className="grid grid-cols-3 gap-2 md:gap-4">
-              <div className="bg-muted/50 border border-border/30 rounded-lg p-3 md:p-4 text-center space-y-2">
-                <div className="flex items-center justify-center gap-1 md:gap-2 text-primary">
-                  <CheckSquare className="h-4 w-4 md:h-5 md:w-5" />
-                  <span className="text-lg md:text-2xl font-bold">{stats.tasksCount}</span>
+            <h3 className="text-sm font-semibold text-foreground">Your Activity</h3>
+            <div className="grid grid-cols-3 gap-4">
+              <div className="bg-muted/50 border border-border/30 rounded-lg p-4 text-center space-y-2">
+                <div className="flex items-center justify-center gap-2 text-primary">
+                  <CheckSquare className="h-5 w-5" />
+                  <span className="text-2xl font-bold">{stats.tasksCount}</span>
                 </div>
                 <p className="text-xs text-muted-foreground">Tasks Created</p>
               </div>
-              <div className="bg-muted/50 border border-border/30 rounded-lg p-3 md:p-4 text-center space-y-2">
-                <div className="flex items-center justify-center gap-1 md:gap-2 text-purple-500">
-                  <Target className="h-4 w-4 md:h-5 md:w-5" />
-                  <span className="text-lg md:text-2xl font-bold">{stats.goalsCount}</span>
+              <div className="bg-muted/50 border border-border/30 rounded-lg p-4 text-center space-y-2">
+                <div className="flex items-center justify-center gap-2 text-purple-500">
+                  <Target className="h-5 w-5" />
+                  <span className="text-2xl font-bold">{stats.goalsCount}</span>
                 </div>
                 <p className="text-xs text-muted-foreground">Goals Created</p>
               </div>
-              <div className="bg-muted/50 border border-border/30 rounded-lg p-3 md:p-4 text-center space-y-2">
-                <div className="flex items-center justify-center gap-1 md:gap-2 text-blue-500">
-                  <Calendar className="h-4 w-4 md:h-5 md:w-5" />
-                  <span className="text-lg md:text-2xl font-bold">{stats.eventsCount}</span>
+              <div className="bg-muted/50 border border-border/30 rounded-lg p-4 text-center space-y-2">
+                <div className="flex items-center justify-center gap-2 text-blue-500">
+                  <Calendar className="h-5 w-5" />
+                  <span className="text-2xl font-bold">{stats.eventsCount}</span>
                 </div>
                 <p className="text-xs text-muted-foreground">Events Created</p>
               </div>
             </div>
           </div>
 
-          {/* Control Center Voice Sync */}
-          <div className="space-y-4 pt-4 border-t border-border/30">
-            <div className="flex items-center gap-2">
-              <Mic className="h-4 w-4 text-primary" />
-              <h3 className="text-sm font-semibold text-foreground">Control Center Voice Sync</h3>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Speak a task or event from your iPhone Control Center — it instantly appears in your calendar via AI.
-            </p>
-
-            {/* User ID copy */}
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Your User ID (needed for the Shortcut)</label>
-              <div className="flex items-center gap-2">
-                <div className="flex-1 bg-muted/50 border border-border/30 rounded-lg px-3 py-2 font-mono text-xs text-foreground truncate">
-                  {user.id}
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleCopyUserId}
-                  className="shrink-0 gap-1.5"
-                >
-                  {copiedUserId ? (
-                    <><Check className="h-3.5 w-3.5 text-green-500" /> Copied</>
-                  ) : (
-                    <><Copy className="h-3.5 w-3.5" /> Copy</>
-                  )}
-                </Button>
-              </div>
-            </div>
-
-            {/* CTA button */}
-            <a
-              href="https://www.icloud.com/shortcuts/e0fbadb6f17e42a6876c0821edde3e75"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <Button className="w-full gap-2 bg-primary hover:bg-primary/90">
-                <Smartphone className="h-4 w-4" />
-                Add to Control Center
-              </Button>
-            </a>
-
-            {/* 3-step instructions */}
-            <div className="space-y-2 pt-1">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">How it works</p>
-              <div className="space-y-2">
-                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/20 text-primary text-xs font-bold shrink-0 mt-0.5">1</span>
-                  <div>
-                    <p className="text-sm font-medium">Download &amp; configure the Shortcut</p>
-                    <p className="text-xs text-muted-foreground">Tap "Add to Control Center" above, then paste your User ID when prompted.</p>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/20 text-primary text-xs font-bold shrink-0 mt-0.5">2</span>
-                  <div>
-                    <p className="text-sm font-medium">Add to Control Center or Action Button</p>
-                    <p className="text-xs text-muted-foreground">Go to Settings → Control Center → add "Voice Quick Add". Or assign it to your iPhone's Action Button.</p>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/20 text-primary text-xs font-bold shrink-0 mt-0.5">3</span>
-                  <div>
-                    <p className="text-sm font-medium">Tap, speak, done</p>
-                    <p className="text-xs text-muted-foreground">Tap the shortcut, speak your task or event, and it instantly appears in your calendar.</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
           {/* iMessage Status */}
           <div className="space-y-3 pt-4 border-t border-border/30">
-            <h3 className="text-xs md:text-sm font-semibold text-foreground">iMessage Features</h3>
+            <h3 className="text-sm font-semibold text-foreground">iMessage Features</h3>
             <div className="space-y-2">
               <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                <span className="text-green-600 dark:text-green-400 text-lg mt-0.5 shrink-0">✓</span>
+                <span className="text-green-600 dark:text-green-400 text-lg mt-0.5">✓</span>
                 <div>
-                  <p className="text-xs md:text-sm font-medium">Fuzzy Message Understanding</p>
+                  <p className="text-sm font-medium">Fuzzy Message Understanding</p>
                   <p className="text-xs text-muted-foreground">Handles typos, spelling errors, and casual language</p>
                 </div>
               </div>
               <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                <span className="text-green-600 dark:text-green-400 text-lg mt-0.5 shrink-0">✓</span>
+                <span className="text-green-600 dark:text-green-400 text-lg mt-0.5">✓</span>
                 <div>
-                  <p className="text-xs md:text-sm font-medium">Auto Task/Goal/Event Creation</p>
+                  <p className="text-sm font-medium">Auto Task/Goal/Event Creation</p>
                   <p className="text-xs text-muted-foreground">Send any message and AI will create the right item</p>
                 </div>
               </div>
@@ -601,73 +312,6 @@ export function UserProfile() {
               <div className="p-3 bg-muted/30 rounded-lg">
                 <p className="font-mono text-xs mb-1">💬 "i wanna maybe learn coding or whatever"</p>
                 <p className="text-xs text-muted-foreground">→ Creates goal: "learn coding"</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Gmail Reminders & Alerts */}
-          <div className="space-y-4 pt-4 border-t border-border/30">
-            <div className="flex items-center gap-2">
-              <Mail className="h-4 w-4 text-primary" />
-              <h3 className="text-sm font-semibold text-foreground">Gmail Reminders & Alerts</h3>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Get automatic email reminders for your tasks and events before they're due.
-            </p>
-
-            {/* How to check */}
-            <div className="space-y-2 pt-1">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">How to check reminders</p>
-              <div className="space-y-2">
-                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/20 text-primary text-xs font-bold shrink-0 mt-0.5">1</span>
-                  <div>
-                    <p className="text-sm font-medium">Connect your Gmail</p>
-                    <p className="text-xs text-muted-foreground">Go to Integrations → Connect Google Calendar & Gmail</p>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/20 text-primary text-xs font-bold shrink-0 mt-0.5">2</span>
-                  <div>
-                    <p className="text-sm font-medium">View task/event reminders</p>
-                    <p className="text-xs text-muted-foreground">Open any task or event and check "Mail alerts" status with upcoming reminder times</p>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/20 text-primary text-xs font-bold shrink-0 mt-0.5">3</span>
-                  <div>
-                    <p className="text-sm font-medium">Check your Gmail inbox</p>
-                    <p className="text-xs text-muted-foreground">Calendar app will send reminder emails automatically before due dates</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Reminder features */}
-            <div className="space-y-2 pt-2">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Features</p>
-              <div className="space-y-2">
-                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                  <span className="text-green-600 dark:text-green-400 text-lg mt-0.5 shrink-0">✓</span>
-                  <div>
-                    <p className="text-xs md:text-sm font-medium">Multiple Reminders</p>
-                    <p className="text-xs text-muted-foreground">Get alerts at different times (1 hour before, 1 day before, etc.)</p>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                  <span className="text-green-600 dark:text-green-400 text-lg mt-0.5 shrink-0">✓</span>
-                  <div>
-                    <p className="text-xs md:text-sm font-medium">Automatic Emails</p>
-                    <p className="text-xs text-muted-foreground">Reminders are sent to your Gmail at the scheduled time</p>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3 p-3 bg-muted/30 rounded-lg">
-                  <span className="text-green-600 dark:text-green-400 text-lg mt-0.5 shrink-0">✓</span>
-                  <div>
-                    <p className="text-xs md:text-sm font-medium">Status Tracking</p>
-                    <p className="text-xs text-muted-foreground">See pending, sent, and completed reminders for each item</p>
-                  </div>
-                </div>
               </div>
             </div>
           </div>

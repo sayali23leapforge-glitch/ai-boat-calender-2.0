@@ -15,25 +15,34 @@
   - Add metadata (jsonb) - For flexible task metadata
 */
 
--- Add missing columns to tasks table if they don't exist
-ALTER TABLE tasks
-  ADD COLUMN IF NOT EXISTS due_time time without time zone,
-  ADD COLUMN IF NOT EXISTS priority text NOT NULL DEFAULT 'medium',
-  ADD COLUMN IF NOT EXISTS estimated_hours numeric,
-  ADD COLUMN IF NOT EXISTS progress integer DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS goal text,
-  ADD COLUMN IF NOT EXISTS location text,
-  ADD COLUMN IF NOT EXISTS metadata jsonb DEFAULT '{}'::jsonb;
+DO $$
+BEGIN
+  -- This migration can run before tasks exists in some histories.
+  IF to_regclass('public.tasks') IS NULL THEN
+    RAISE NOTICE 'Skipping 20250108_add_missing_task_columns: public.tasks does not exist yet.';
+    RETURN;
+  END IF;
 
--- Add constraints
-ALTER TABLE tasks
-  DROP CONSTRAINT IF EXISTS tasks_priority_check,
-  ADD CONSTRAINT tasks_priority_check CHECK (priority IN ('critical', 'high', 'medium', 'low'));
+  -- Add missing columns to tasks table if they don't exist
+  ALTER TABLE tasks
+    ADD COLUMN IF NOT EXISTS due_time time without time zone,
+    ADD COLUMN IF NOT EXISTS priority text NOT NULL DEFAULT 'medium',
+    ADD COLUMN IF NOT EXISTS estimated_hours numeric,
+    ADD COLUMN IF NOT EXISTS progress integer DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS goal text,
+    ADD COLUMN IF NOT EXISTS location text,
+    ADD COLUMN IF NOT EXISTS metadata jsonb DEFAULT '{}'::jsonb;
 
-ALTER TABLE tasks
-  DROP CONSTRAINT IF EXISTS tasks_progress_check,
-  ADD CONSTRAINT tasks_progress_check CHECK (progress >= 0 AND progress <= 100);
+  -- Add constraints
+  ALTER TABLE tasks
+    DROP CONSTRAINT IF EXISTS tasks_priority_check,
+    ADD CONSTRAINT tasks_priority_check CHECK (priority IN ('critical', 'high', 'medium', 'low'));
 
--- Create indexes for better query performance
-CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
-CREATE INDEX IF NOT EXISTS idx_tasks_progress ON tasks(progress);
+  ALTER TABLE tasks
+    DROP CONSTRAINT IF EXISTS tasks_progress_check,
+    ADD CONSTRAINT tasks_progress_check CHECK (progress >= 0 AND progress <= 100);
+
+  -- Create indexes for better query performance
+  CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
+  CREATE INDEX IF NOT EXISTS idx_tasks_progress ON tasks(progress);
+END $$;

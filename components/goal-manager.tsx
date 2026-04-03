@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -17,11 +17,12 @@ import {
 } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
-import { Plus, Calendar, CheckCircle2, TrendingUp, Edit, Trash2, Loader2, BellRing } from "lucide-react"
+import { Plus, Calendar, CheckCircle2, TrendingUp, Edit, Trash2, Loader2, Search, X } from "lucide-react"
 import { toast } from "sonner"
 import { supabase } from "@/lib/supabase"
 import {
-  getGoals,
+  getGoalsPage,
+  getGoalWithTasks,
   createGoal,
   updateGoal,
   deleteGoal,
@@ -52,6 +53,8 @@ const priorityColors = {
   low: "bg-[color:var(--priority-low)]",
 }
 
+const GOAL_PAGE_SIZE = 12
+
 export function GoalManager({ userId }: GoalManagerProps) {
   const [goals, setGoals] = useState<GoalWithTasks[]>([])
   const [selectedGoal, setSelectedGoal] = useState<GoalWithTasks | null>(null)
@@ -60,6 +63,14 @@ export function GoalManager({ userId }: GoalManagerProps) {
   const [isAddTaskDialogOpen, setIsAddTaskDialogOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
+  const [hasMoreGoals, setHasMoreGoals] = useState(false)
+  const [loadingMoreGoals, setLoadingMoreGoals] = useState(false)
+
+  const goalsOffsetRef = useRef(0)
+  const goalsScrollRef = useRef<HTMLDivElement | null>(null)
+  const hasMoreGoalsRef = useRef(false)
+  const loadingMoreGoalsRef = useRef(false)
+  const loadMoreInFlightRef = useRef(false)
 
   // Form states
   const [formTitle, setFormTitle] = useState("")
@@ -73,24 +84,107 @@ export function GoalManager({ userId }: GoalManagerProps) {
   const [taskPriority, setTaskPriority] = useState<GoalPriority>("medium")
   const [taskDueDate, setTaskDueDate] = useState("")
 
+  const [filterCategory, setFilterCategory] = useState<"all" | GoalCategory>("all")
+  const [filterPriority, setFilterPriority] = useState<"all" | GoalPriority>("all")
+  const [goalSearch, setGoalSearch] = useState("")
+  const [debouncedGoalSearch, setDebouncedGoalSearch] = useState("")
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedGoalSearch(goalSearch.trim()), 300)
+    return () => window.clearTimeout(t)
+  }, [goalSearch])
+
+  const hasActiveFilters =
+    filterCategory !== "all" || filterPriority !== "all" || debouncedGoalSearch.length > 0
+
+  const clearGoalFilters = () => {
+    setFilterCategory("all")
+    setFilterPriority("all")
+    setGoalSearch("")
+  }
+
+  const loadGoalsInitial = useCallback(async () => {
+    if (!userId) return
+    try {
+      setIsLoading(true)
+      setLoadingMoreGoals(false)
+      loadingMoreGoalsRef.current = false
+      loadMoreInFlightRef.current = false
+      goalsOffsetRef.current = 0
+      const { goals: page, hasMore } = await getGoalsPage(userId, {
+        limit: GOAL_PAGE_SIZE,
+        offset: 0,
+        ...(filterCategory !== "all" ? { category: filterCategory } : {}),
+        ...(filterPriority !== "all" ? { priority: filterPriority } : {}),
+        ...(debouncedGoalSearch ? { search: debouncedGoalSearch } : {}),
+      })
+      goalsOffsetRef.current = page.length
+      setGoals(page)
+      setHasMoreGoals(hasMore)
+      hasMoreGoalsRef.current = hasMore
+    } catch (error) {
+      console.error("Failed to load goals", error)
+      toast.error("Failed to load goals")
+    } finally {
+      setIsLoading(false)
+    }
+  }, [userId, filterCategory, filterPriority, debouncedGoalSearch])
+
+  const loadGoalsInitialRef = useRef(loadGoalsInitial)
+  loadGoalsInitialRef.current = loadGoalsInitial
+
+  const loadMoreGoals = useCallback(async () => {
+    if (!userId || !hasMoreGoalsRef.current || loadMoreInFlightRef.current) return
+    loadMoreInFlightRef.current = true
+    setLoadingMoreGoals(true)
+    loadingMoreGoalsRef.current = true
+    try {
+      const { goals: page, hasMore } = await getGoalsPage(userId, {
+        limit: GOAL_PAGE_SIZE,
+        offset: goalsOffsetRef.current,
+        ...(filterCategory !== "all" ? { category: filterCategory } : {}),
+        ...(filterPriority !== "all" ? { priority: filterPriority } : {}),
+        ...(debouncedGoalSearch ? { search: debouncedGoalSearch } : {}),
+      })
+      if (page.length === 0) {
+        setHasMoreGoals(false)
+        hasMoreGoalsRef.current = false
+        return
+      }
+      goalsOffsetRef.current += page.length
+      setHasMoreGoals(hasMore)
+      hasMoreGoalsRef.current = hasMore
+      setGoals((prev) => [...prev, ...page])
+    } catch (error) {
+      console.error("Failed to load more goals", error)
+      toast.error("Failed to load more goals")
+    } finally {
+      loadMoreInFlightRef.current = false
+      loadingMoreGoalsRef.current = false
+      setLoadingMoreGoals(false)
+    }
+  }, [userId, filterCategory, filterPriority, debouncedGoalSearch])
+
+  const loadMoreGoalsRef = useRef(loadMoreGoals)
+  loadMoreGoalsRef.current = loadMoreGoals
+
   useEffect(() => {
     if (userId) {
-      loadGoals()
-      
-      // Subscribe to real-time goal changes
+      void loadGoalsInitial()
+
       const channel = supabase
         .channel(`goals-user-${userId}`)
         .on(
-          'postgres_changes',
+          "postgres_changes",
           {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'goals',
+            event: "INSERT",
+            schema: "public",
+            table: "goals",
             filter: `user_id=eq.${userId}`,
           },
           () => {
-            console.log('✨ New goal created via iMessage! Refreshing...')
-            loadGoals()
+            console.log("✨ New goal created via iMessage! Refreshing...")
+            void loadGoalsInitialRef.current()
           }
         )
         .subscribe()
@@ -99,20 +193,40 @@ export function GoalManager({ userId }: GoalManagerProps) {
         supabase.removeChannel(channel)
       }
     }
-  }, [userId])
+  }, [userId, loadGoalsInitial])
 
-  const loadGoals = async () => {
-    try {
-      setIsLoading(true)
-      const data = await getGoals(userId)
-      setGoals(data)
-    } catch (error) {
-      console.error("Failed to load goals", error)
-      toast.error("Failed to load goals")
-    } finally {
-      setIsLoading(false)
+  const mergeRefreshedGoal = useCallback(
+    (refreshed: GoalWithTasks) => {
+      setSelectedGoal(refreshed)
+      setGoals((prev) => {
+        const matchesCategory = filterCategory === "all" || refreshed.category === filterCategory
+        const matchesPriority = filterPriority === "all" || refreshed.priority === filterPriority
+        const q = debouncedGoalSearch.toLowerCase()
+        const matchesSearch =
+          !q ||
+          `${refreshed.title} ${refreshed.description ?? ""}`.toLowerCase().includes(q)
+        if (!matchesCategory || !matchesPriority || !matchesSearch) {
+          return prev.filter((g) => g.id !== refreshed.id)
+        }
+        const i = prev.findIndex((g) => g.id === refreshed.id)
+        if (i < 0) return prev
+        const next = [...prev]
+        next[i] = refreshed
+        return next
+      })
+    },
+    [filterCategory, filterPriority, debouncedGoalSearch]
+  )
+
+  const onGoalsScroll = useCallback(() => {
+    const el = goalsScrollRef.current
+    if (!el || loadMoreInFlightRef.current || !hasMoreGoalsRef.current) return
+    if (loadingMoreGoalsRef.current) return
+    const threshold = 200
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < threshold) {
+      void loadMoreGoalsRef.current()
     }
-  }
+  }, [])
 
   const resetForm = () => {
     setFormTitle("")
@@ -146,7 +260,7 @@ export function GoalManager({ userId }: GoalManagerProps) {
       toast.success("Goal created successfully")
       setIsCreateDialogOpen(false)
       resetForm()
-      await loadGoals()
+      await loadGoalsInitial()
     } catch (error) {
       console.error("Failed to create goal", error)
       toast.error(error instanceof Error ? error.message : "Failed to create goal")
@@ -173,7 +287,7 @@ export function GoalManager({ userId }: GoalManagerProps) {
       toast.success("Goal updated successfully")
       setIsEditDialogOpen(false)
       resetForm()
-      await loadGoals()
+      await loadGoalsInitial()
       setSelectedGoal(null)
     } catch (error) {
       console.error("Failed to update goal", error)
@@ -194,7 +308,7 @@ export function GoalManager({ userId }: GoalManagerProps) {
       await deleteGoal(selectedGoal.id)
       toast.success("Goal deleted successfully")
       setSelectedGoal(null)
-      await loadGoals()
+      await loadGoalsInitial()
     } catch (error) {
       console.error("Failed to delete goal", error)
       toast.error(error instanceof Error ? error.message : "Failed to delete goal")
@@ -217,11 +331,8 @@ export function GoalManager({ userId }: GoalManagerProps) {
       toast.success("Task added successfully")
       setIsAddTaskDialogOpen(false)
       resetTaskForm()
-      await loadGoals()
-      // Refresh selected goal
-      const updated = await getGoals(userId)
-      const refreshed = updated.find((g) => g.id === selectedGoal.id)
-      if (refreshed) setSelectedGoal(refreshed)
+      const refreshed = await getGoalWithTasks(selectedGoal.id)
+      if (refreshed) mergeRefreshedGoal(refreshed)
     } catch (error) {
       console.error("Failed to add task", error)
       toast.error(error instanceof Error ? error.message : "Failed to add task")
@@ -233,12 +344,9 @@ export function GoalManager({ userId }: GoalManagerProps) {
   const handleToggleTask = async (task: GoalTask) => {
     try {
       await updateGoalTask(task.id, { completed: !task.completed })
-      await loadGoals()
-      // Refresh selected goal
       if (selectedGoal) {
-        const updated = await getGoals(userId)
-        const refreshed = updated.find((g) => g.id === selectedGoal.id)
-        if (refreshed) setSelectedGoal(refreshed)
+        const refreshed = await getGoalWithTasks(selectedGoal.id)
+        if (refreshed) mergeRefreshedGoal(refreshed)
       }
     } catch (error) {
       console.error("Failed to update task", error)
@@ -250,12 +358,9 @@ export function GoalManager({ userId }: GoalManagerProps) {
     try {
       await deleteGoalTask(taskId)
       toast.success("Task deleted")
-      await loadGoals()
-      // Refresh selected goal
       if (selectedGoal) {
-        const updated = await getGoals(userId)
-        const refreshed = updated.find((g) => g.id === selectedGoal.id)
-        if (refreshed) setSelectedGoal(refreshed)
+        const refreshed = await getGoalWithTasks(selectedGoal.id)
+        if (refreshed) mergeRefreshedGoal(refreshed)
       }
     } catch (error) {
       console.error("Failed to delete task", error)
@@ -286,30 +391,18 @@ export function GoalManager({ userId }: GoalManagerProps) {
     return tasks.filter((task) => task.completed).length
   }
 
-  const formatOffsetLabel = (offsetMinutes?: number | null) => {
-    if (!offsetMinutes || offsetMinutes <= 0) return null
-    if (offsetMinutes % (24 * 60) === 0) {
-      const days = offsetMinutes / (24 * 60)
-      return `${days}d before target`
-    }
-    if (offsetMinutes % 60 === 0) {
-      const hours = offsetMinutes / 60
-      return `${hours}h before target`
-    }
-    return `${offsetMinutes}m before target`
-  }
-
   if (isLoading) {
     return (
-      <div className="p-6 flex items-center justify-center min-h-[400px]">
+      <div className="flex h-full min-h-0 items-center justify-center p-6">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
       </div>
     )
   }
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      {/* Header — fixed; list scrolls below */}
+      <div className="shrink-0 space-y-4 p-6 pb-4">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Goals & Objectives</h1>
@@ -397,16 +490,109 @@ export function GoalManager({ userId }: GoalManagerProps) {
         </Dialog>
       </div>
 
+      <div className="flex flex-col gap-3 border-t border-border/60 pt-4 sm:flex-row sm:flex-wrap sm:items-end">
+        <div className="relative min-w-0 flex-1 sm:min-w-[200px] sm:max-w-md">
+          <Search
+            className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden
+          />
+          <Input
+            value={goalSearch}
+            onChange={(e) => setGoalSearch(e.target.value)}
+            placeholder="Search title or description…"
+            className="h-9 pl-9 pr-9"
+            aria-label="Search goals"
+          />
+          {goalSearch ? (
+            <button
+              type="button"
+              className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              onClick={() => setGoalSearch("")}
+              aria-label="Clear search"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap items-end gap-2 sm:gap-3">
+          <div className="grid gap-1">
+            <Label htmlFor="filter-category" className="text-xs text-muted-foreground">
+              Category
+            </Label>
+            <Select
+              value={filterCategory}
+              onValueChange={(v) => setFilterCategory(v as "all" | GoalCategory)}
+            >
+              <SelectTrigger id="filter-category" className="h-9 w-[min(100%,11rem)]">
+                <SelectValue placeholder="Category" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All categories</SelectItem>
+                <SelectItem value="work">Work</SelectItem>
+                <SelectItem value="personal">Personal</SelectItem>
+                <SelectItem value="health">Health</SelectItem>
+                <SelectItem value="learning">Learning</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-1">
+            <Label htmlFor="filter-priority" className="text-xs text-muted-foreground">
+              Priority
+            </Label>
+            <Select
+              value={filterPriority}
+              onValueChange={(v) => setFilterPriority(v as "all" | GoalPriority)}
+            >
+              <SelectTrigger id="filter-priority" className="h-9 w-[min(100%,11rem)]">
+                <SelectValue placeholder="Priority" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All priorities</SelectItem>
+                <SelectItem value="critical">Critical</SelectItem>
+                <SelectItem value="high">High</SelectItem>
+                <SelectItem value="medium">Medium</SelectItem>
+                <SelectItem value="low">Low</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {hasActiveFilters ? (
+            <Button type="button" variant="outline" size="sm" className="h-9 shrink-0" onClick={clearGoalFilters}>
+              Clear filters
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      </div>
+
+      <div
+        ref={goalsScrollRef}
+        onScroll={onGoalsScroll}
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 pb-6 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent"
+        role="region"
+        aria-label="Goals list"
+      >
       {/* Goals Grid */}
       {goals.length === 0 ? (
         <Card className="p-12 text-center">
-          <p className="text-muted-foreground mb-4">No goals yet. Create your first goal to get started!</p>
-          <Button onClick={() => setIsCreateDialogOpen(true)}>
-            <Plus className="h-4 w-4 mr-2" />
-            Create Your First Goal
-          </Button>
+          {hasActiveFilters ? (
+            <>
+              <p className="text-muted-foreground mb-4">No goals match your filters.</p>
+              <Button type="button" variant="outline" onClick={clearGoalFilters}>
+                Clear filters
+              </Button>
+            </>
+          ) : (
+            <>
+              <p className="text-muted-foreground mb-4">No goals yet. Create your first goal to get started!</p>
+              <Button onClick={() => setIsCreateDialogOpen(true)}>
+                <Plus className="h-4 w-4 mr-2" />
+                Create Your First Goal
+              </Button>
+            </>
+          )}
         </Card>
       ) : (
+      <>
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
         {goals.map((goal) => {
             const daysLeft = getDaysUntilTarget(goal.target_date)
@@ -471,7 +657,21 @@ export function GoalManager({ userId }: GoalManagerProps) {
           )
         })}
       </div>
+      {hasMoreGoals ? (
+        <div className="flex flex-col items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
+          {loadingMoreGoals ? (
+            <>
+              <Loader2 className="h-6 w-6 animate-spin text-primary" aria-hidden />
+              <span>Loading more goals…</span>
+            </>
+          ) : (
+            <span className="text-xs">Scroll for more goals</span>
+          )}
+        </div>
+      ) : null}
+      </>
       )}
+      </div>
 
       {/* Goal Detail Modal */}
       {selectedGoal && (
@@ -549,68 +749,6 @@ export function GoalManager({ userId }: GoalManagerProps) {
                       : "—"}
                   </span>
                 </div>
-              </div>
-
-              {/* Reminder Schedule */}
-              <div className="space-y-3 rounded-lg border p-4 bg-muted/10">
-                <div className="flex items-center gap-2">
-                  <BellRing className="h-4 w-4 text-primary" />
-                  <h4 className="font-medium">Email alert schedule</h4>
-                </div>
-                {(selectedGoal.reminder_schedule || []).length === 0 ? (
-                  <p className="text-sm text-muted-foreground">
-                    {selectedGoal.target_date
-                      ? "No email alerts are currently queued for this goal."
-                      : "Set a target date to generate scheduled email alerts."}
-                  </p>
-                ) : (
-                  <div className="space-y-2">
-                    {[...(selectedGoal.reminder_schedule || [])]
-                      .sort(
-                        (a, b) =>
-                          new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime()
-                      )
-                      .map((reminder, index) => {
-                        const statusClass =
-                          reminder.status === "SENT"
-                            ? "bg-[color:var(--priority-low)]/10 text-[color:var(--priority-low)]"
-                            : reminder.status === "FAILED"
-                              ? "bg-[color:var(--priority-critical)]/10 text-[color:var(--priority-critical)]"
-                              : "bg-primary/10 text-primary"
-                        const offsetLabel = formatOffsetLabel(reminder.offset_minutes)
-                        const isRelatedQuestion = reminder.alert_kind === "RELATED_QUESTION"
-
-                        return (
-                          <div key={`${reminder.scheduled_at}-${index}`} className="flex items-start gap-3">
-                            <div className="mt-1 h-2.5 w-2.5 rounded-full bg-primary/80" />
-                            <div className="flex-1 min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${statusClass}`}>
-                                  {reminder.status}
-                                </span>
-                                {isRelatedQuestion ? (
-                                  <span className="text-[11px] px-2 py-0.5 rounded-full font-medium bg-amber-500/10 text-amber-700">
-                                    Related question
-                                  </span>
-                                ) : offsetLabel ? (
-                                  <span className="text-[11px] text-muted-foreground">{offsetLabel}</span>
-                                ) : null}
-                              </div>
-                              <p className="text-sm">
-                                {new Date(reminder.scheduled_at).toLocaleString(undefined, {
-                                  weekday: "short",
-                                  month: "short",
-                                  day: "numeric",
-                                  hour: "numeric",
-                                  minute: "2-digit",
-                                })}
-                              </p>
-                            </div>
-                          </div>
-                        )
-                      })}
-                  </div>
-                )}
               </div>
 
               {/* Tasks */}

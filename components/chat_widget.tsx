@@ -32,15 +32,7 @@ import {
 } from "@/lib/calendar-events";
 
 import { createGoal, getGoals, updateGoal, deleteGoal, type GoalWithTasks } from "@/lib/goals";
-
-type AllowedView =
-  | "tasks"
-  | "calendar"
-  | "goals"
-  | "priorities"
-  | "focus"
-  | "google"
-  | "upload";
+import type { WorkspaceView } from "@/lib/workspace-types";
 
 type Priority = "critical" | "high" | "medium" | "low";
 
@@ -51,7 +43,7 @@ type Priority = "critical" | "high" | "medium" | "low";
 type ToolCall =
   | { id?: string; name: "ui_console_log"; arguments: { message: string } }
   | { id?: string; name: "ui_alert"; arguments: { message: string } }
-  | { id?: string; name: "set_active_view"; arguments: { view: AllowedView } }
+  | { id?: string; name: "set_active_view"; arguments: { view: WorkspaceView } }
   | {
       id?: string;
       name: "request_disambiguation";
@@ -167,24 +159,13 @@ type ChatApiResponse = {
   assistantText: string;
   toolCalls: ToolCall[];
   requestId?: string;
-  pendingEventDraft?: PendingEventDraft | null;
-  successMessage?: string;
+  /** When true, skip adding an assistant bubble; optional toast via successMessage */
   silentMode?: boolean;
-};
-
-type PendingEventDraft = {
-  kind: "event_conflict_resolution";
-  date: string;
-  requestedStartTime?: string;
-  requestedEndTime?: string;
-  durationMinutes: number;
-  pendingTool: ToolCall;
-  slots: Array<{ start_time: string; end_time: string; reason: string }>;
-  createdAt: string;
+  successMessage?: string;
 };
 
 type ChatWidgetProps = {
-  onSetActiveView: (view: AllowedView) => void;
+  onSetActiveView: (view: WorkspaceView) => void;
   userId: string;
   onFileUploaded?: () => void;
 };
@@ -194,7 +175,7 @@ type RecentEntities = {
   lastEventTitle?: string | null;
   lastGoalTitle?: string | null;
   lastTaskListName?: string | null;
-  lastActiveView?: AllowedView | null;
+  lastActiveView?: WorkspaceView | null;
 
   // ✅ Wave 4 (additive): ID-based memory
   lastTaskId?: string | null;
@@ -505,9 +486,7 @@ function isAmbiguousReference(s: string): boolean {
 export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: ChatWidgetProps) {
   console.log("[ChatWidget] Props received:", { userId, userIdType: typeof userId });
   
-  const [isPinnedOpen, setIsPinnedOpen] = useState(false);
-  const [isHovered, setIsHovered] = useState(false);
-  const [hasFocusWithin, setHasFocusWithin] = useState(false);
+  const [open, setOpen] = useState(true);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
@@ -515,8 +494,6 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
   const composerRef = useRef<HTMLDivElement>(null);
   const [iMessageConnected, setIMessageConnected] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const iMessageInitAttemptedRef = useRef(false);
-  const isExpanded = isPinnedOpen || isHovered || hasFocusWithin;
 
   const [resolvedUserId, setResolvedUserId] = useState<string>(userId || "");
 
@@ -539,7 +516,6 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
   // ✅ NEW: keep last user text so tool execution can parse duration/date even after input is cleared
   const lastSentUserTextRef = useRef<string>("");
-  const pendingEventDraftRef = useRef<PendingEventDraft | null>(null);
 
   const apiMessages = useMemo(
     () =>
@@ -568,7 +544,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
   // Handle paste events for images
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
-      if (!isExpanded || !composerRef.current?.contains(document.activeElement)) return;
+      if (!open || !composerRef.current?.contains(document.activeElement)) return;
       
       const items = e.clipboardData?.items;
       if (!items) return;
@@ -589,14 +565,10 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
     document.addEventListener('paste', handlePaste);
     return () => document.removeEventListener('paste', handlePaste);
-  }, [isExpanded]);
+  }, [open]);
 
   // Initialize iMessage integration (optional - app works without it)
   useEffect(() => {
-    // Prevent duplicate init in React StrictMode dev double-mount.
-    if (iMessageInitAttemptedRef.current) return;
-    iMessageInitAttemptedRef.current = true;
-
     // Check if BlueBubbles is configured
     const blueBubblesUrl = process.env.NEXT_PUBLIC_BLUEBUBBLES_BASE_URL;
     if (!blueBubblesUrl || blueBubblesUrl === '') {
@@ -750,7 +722,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
       return;
     }
     if (tc.name === "set_active_view") {
-      const view = (tc as any).arguments?.view as AllowedView | undefined;
+      const view = (tc as any).arguments?.view as WorkspaceView | undefined;
       if (view) {
         onSetActiveView(view);
         setRecentEntities({ lastActiveView: view });
@@ -938,18 +910,17 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
           lastActiveView: "calendar",
         });
 
-        // Switch to calendar view first so the component mounts and its event listeners are active
-        onSetActiveView("calendar");
-
-        // After calendar is mounted, navigate to the event date (handles far-future dates)
-        // then refresh to load events in the new window
+        // Delay refresh to ensure API response is fully processed, then trigger calendar refresh
         setTimeout(() => {
-          window.dispatchEvent(new CustomEvent("navigateCalendarToDate", { detail: { date: a.date } }));
-        }, 300);
-
-        setTimeout(() => {
+          // Dispatch multiple times to ensure it's caught
           window.dispatchEvent(new CustomEvent("refreshCalendar"));
-        }, 700);
+          window.dispatchEvent(new CustomEvent("refreshCalendar"));
+        }, 800);
+        
+        // Switch to calendar view after a slight delay
+        setTimeout(() => {
+          onSetActiveView("calendar");
+        }, 1000);
       } catch (e: any) {
         console.error("create_event failed:", e);
         toast.error(e?.message ?? "Failed to create event");
@@ -1208,7 +1179,6 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
         const updates: any = {};
 
-
         if (a.title !== undefined) updates.title = a.title;
         if (a.description !== undefined) updates.description = a.description;
         if (a.date !== undefined) updates.event_date = a.date;
@@ -1232,11 +1202,6 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
           updates.end_time = `${normalizeTimeToHHMM(endHHMM)}:00`;
         }
 
-        if (Object.keys(updates).length === 0) {
-          toast.error("Nothing to update — no fields were changed.");
-          return;
-        }
-
         await updateCalendarEvent((ev as any).id, updates);
 
         toast.success("Event updated 📅");
@@ -1249,7 +1214,6 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
         window.dispatchEvent(new CustomEvent("refreshCalendar"));
         onSetActiveView("calendar");
-        pendingEventDraftRef.current = null;
       } catch (e: any) {
         console.error("update_event_by_title failed:", e);
         toast.error(e?.message ?? "Failed to update event");
@@ -1549,7 +1513,6 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
       setRecentEntities({
         lastActiveView: "calendar",
       });
-      pendingEventDraftRef.current = null;
       return;
     }
 
@@ -1584,30 +1547,27 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
     setAttachedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  // Upload files to storage, return public URLs for any image files.
-  // URLs are used by the chat API to download images server-side for Gemini Vision —
-  // avoids sending large base64 payloads through the browser request body.
-  const uploadFiles = async (files: File[]): Promise<string[]> => {
-    const imageUrls: string[] = [];
-
-    await Promise.all(files.map(async (file) => {
+  // Upload files to storage and create records
+  const uploadFiles = async (files: File[]) => {
+    const uploadPromises = files.map(async (file) => {
       try {
-        const result = await uploadDocument(file, resolvedUserId || userId);
+        const document = await uploadDocument(file, resolvedUserId || userId);
         const isImage = file.type.startsWith('image/');
         toast.success(`${isImage ? 'Image' : 'Document'} uploaded: ${file.name}`);
-        if (isImage && result?.publicUrl) {
-          imageUrls.push(result.publicUrl);
-        }
+        return document;
       } catch (error) {
         console.error('Upload error:', error);
         toast.error(`Failed to upload ${file.name}`);
+        return null;
       }
-    }));
+    });
 
+    await Promise.all(uploadPromises);
+    
+    // Notify parent to refresh upload section
     if (onFileUploaded) {
       onFileUploaded();
     }
-    return imageUrls;
   };
 
   async function send(messageText?: string) {
@@ -1629,36 +1589,25 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
     const requestId = makeRequestId();
 
-    // Upload files first, collecting public URLs for any images.
-    // The chat API will download from these URLs server-side for Gemini Vision —
-    // this avoids large base64 payloads in the browser→API request body.
-    let imageUrls: string[] = [];
+    // Upload files first if any
     if (hasFiles) {
       setLoading(true);
-      imageUrls = await uploadFiles(attachedFiles);
+      await uploadFiles(attachedFiles);
       setAttachedFiles([]);
-    }
-
-    // When the user sends only an image with no text, supply a default prompt so
-    // Gemini describes the image rather than returning nothing.
-    const effectiveText = text || (imageUrls.length > 0
-      ? "Look at this image and create calendar events or tasks for anything you find in it. Extract the title, date, time, and location from the image and add them to my calendar."
-      : "");
-
-    if (!effectiveText) {
-      setLoading(false);
-      return;
+      
+      // If no text, just show upload confirmation
+      if (!text) {
+        setLoading(false);
+        return;
+      }
     }
 
     // ✅ store last user text BEFORE we clear input (used by tool execution for duration/date)
-    lastSentUserTextRef.current = effectiveText;
+    lastSentUserTextRef.current = text;
 
     // Only add to chat if not from iMessage (to avoid duplicates)
     if (!messageText) {
-      setChat((prev) => [
-        ...prev,
-        { role: "user", content: text || "📎 Image attached" },
-      ]);
+      setChat((prev) => [...prev, { role: "user", content: text }]);
     }
     setInput("");
     setLoading(true);
@@ -1691,13 +1640,10 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
         body: JSON.stringify({
           requestId,
           userId: uid,
-          messages: [...apiMessages, { role: "user", content: effectiveText }],
-          // Send public Supabase Storage URLs; the API route downloads them server-side
-          imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+          messages: [...apiMessages, { role: "user", content: text }],
           context: {
             timezone: tz,
             recentEntities,
-            pendingEventDraft: pendingEventDraftRef.current,
           },
         }),
       });
@@ -1714,19 +1660,12 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
         return;
       }
 
-      if (Object.prototype.hasOwnProperty.call(data, "pendingEventDraft")) {
-        pendingEventDraftRef.current = data.pendingEventDraft ?? null;
-      }
-
       const assistantText = data?.assistantText || "Done.";
       
       // Handle silent mode (no assistant message, just toast)
       if (data?.silentMode) {
         if (data?.successMessage) {
           toast.success(data.successMessage, { duration: 2000 });
-          setChat((prev) => [...prev, { role: "assistant", content: data.successMessage as string }]);
-        } else {
-          setChat((prev) => [...prev, { role: "assistant", content: "Done — I've handled that." }]);
         }
       } else if (assistantText.trim()) {
         setChat((prev) => [...prev, { role: "assistant", content: assistantText }]);
@@ -1755,40 +1694,10 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
   }
 
   return (
-    <div
-      className="fixed z-[9999] right-5 bottom-5 pointer-events-none"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      onFocusCapture={() => setHasFocusWithin(true)}
-      onBlurCapture={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-          setHasFocusWithin(false);
-        }
-      }}
-    >
-      <div
-        className={cn(
-          "pointer-events-auto border border-border/60 bg-background/75 backdrop-blur-xl shadow-2xl overflow-hidden",
-          isExpanded ? "w-[380px] max-w-[92vw] rounded-2xl" : "w-12 h-12 rounded-full"
-        )}
-      >
-        {!isExpanded ? (
-          <button
-            type="button"
-            onClick={() => setIsPinnedOpen(true)}
-            className="w-full h-full flex items-center justify-center bg-primary/10 hover:bg-primary/20 transition-colors"
-            aria-label="Open assistant"
-          >
-            <Sparkles className="h-5 w-5 text-primary" />
-          </button>
-        ) : (
-          <>
+    <div className="fixed right-4 bottom-4 z-[9999] w-[380px] max-w-[92vw]">
+      <div className="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-xl shadow-2xl overflow-hidden">
         {/* Header */}
-        <div
-          className={cn(
-            "flex items-center justify-between px-4 py-3 border-b border-border/60 bg-muted/30 select-none"
-          )}
-        >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border/60 bg-muted/30">
           <div className="flex items-center gap-2">
             <div className="h-9 w-9 rounded-xl bg-primary/10 flex items-center justify-center">
               <Sparkles className="h-4 w-4 text-primary" />
@@ -1809,8 +1718,8 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
             </div>
           </div>
 
-          <Button variant="ghost" size="sm" className="rounded-xl" onClick={() => setIsPinnedOpen((v) => !v)}>
-            {isPinnedOpen ? (
+          <Button variant="ghost" size="sm" className="rounded-xl" onClick={() => setOpen((v) => !v)}>
+            {open ? (
               <>
                 <ChevronDown className="h-4 w-4 mr-1" />
                 Minimize
@@ -1818,14 +1727,14 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
             ) : (
               <>
                 <ChevronUp className="h-4 w-4 mr-1" />
-                Pin
+                Open
               </>
             )}
           </Button>
         </div>
 
         {/* Body */}
-        {isExpanded && (
+        {open && (
           <>
             <div ref={scrollRef} className="max-h-[340px] overflow-y-auto px-4 py-3 space-y-3">
               {chat.map((m, idx) => {
@@ -1952,13 +1861,11 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
                     />
                   </div>
                 </div>
-                <Button onClick={() => send()} disabled={loading} className="rounded-xl">
+                <Button onClick={() => void send()} disabled={loading} className="rounded-xl">
                   {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 </Button>
               </div>
             </div>
-          </>
-        )}
           </>
         )}
       </div>

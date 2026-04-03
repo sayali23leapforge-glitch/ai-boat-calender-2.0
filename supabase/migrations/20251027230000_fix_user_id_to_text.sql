@@ -14,6 +14,8 @@
 
 -- Fix documents.user_id: uuid -> text
 DO $$
+DECLARE
+  p record;
 BEGIN
   -- Check if user_id is uuid type and needs conversion
   IF EXISTS (
@@ -22,6 +24,16 @@ BEGIN
       AND column_name = 'user_id' 
       AND data_type = 'uuid'
   ) THEN
+    -- Drop policies that depend on user_id before type conversion
+    FOR p IN
+      SELECT policyname
+      FROM pg_policies
+      WHERE schemaname = 'public'
+        AND tablename = 'documents'
+    LOOP
+      EXECUTE format('DROP POLICY IF EXISTS %I ON documents', p.policyname);
+    END LOOP;
+
     -- Drop foreign key constraint if it exists
     ALTER TABLE documents 
       DROP CONSTRAINT IF EXISTS documents_user_id_fkey;
@@ -38,6 +50,8 @@ END $$;
 
 -- Fix extracted_events.user_id: uuid -> text
 DO $$
+DECLARE
+  p record;
 BEGIN
   -- Check if user_id is uuid type and needs conversion
   IF EXISTS (
@@ -46,6 +60,16 @@ BEGIN
       AND column_name = 'user_id' 
       AND data_type = 'uuid'
   ) THEN
+    -- Drop policies that depend on user_id before type conversion
+    FOR p IN
+      SELECT policyname
+      FROM pg_policies
+      WHERE schemaname = 'public'
+        AND tablename = 'extracted_events'
+    LOOP
+      EXECUTE format('DROP POLICY IF EXISTS %I ON extracted_events', p.policyname);
+    END LOOP;
+
     -- Drop foreign key constraint if it exists
     ALTER TABLE extracted_events 
       DROP CONSTRAINT IF EXISTS extracted_events_user_id_fkey;

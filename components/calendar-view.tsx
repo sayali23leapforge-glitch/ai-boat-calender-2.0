@@ -79,17 +79,8 @@ export function CalendarView({ userId }: CalendarViewProps) {
 
   useEffect(() => {
     if (!userId) return;
-    loadUserPreferences();
-  }, [userId]);
-
-  useEffect(() => {
-    if (!userId) return;
     loadEvents();
-  }, [userId, currentDate, refreshTrigger]);
-
-  // Real-time subscription for calendar events (separate from data loading)
-  useEffect(() => {
-    if (!userId) return;
+    loadUserPreferences();
 
     // Subscribe to real-time event changes
     const channel = supabase
@@ -107,38 +98,13 @@ export function CalendarView({ userId }: CalendarViewProps) {
           loadEvents()
         }
       )
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'calendar_events',
-          filter: `user_id=eq.${userId}`,
-        },
-        () => {
-          console.log('📝 Event updated! Refreshing...')
-          loadEvents()
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'DELETE',
-          schema: 'public',
-          table: 'calendar_events',
-          filter: `user_id=eq.${userId}`,
-        },
-        () => {
-          console.log('🗑️ Event deleted! Refreshing...')
-          loadEvents()
-        }
-      )
       .subscribe()
 
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [userId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, currentDate, refreshTrigger]);
 
   // Listen for custom events to refresh calendar (e.g., when tasks are created)
   useEffect(() => {
@@ -146,23 +112,8 @@ export function CalendarView({ userId }: CalendarViewProps) {
       setRefreshTrigger((prev) => prev + 1);
     };
 
-    const handleNavigate = (e: Event) => {
-      const date = (e as CustomEvent).detail?.date as string | undefined;
-      if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
-        // setCurrentDate triggers the loadEvents useEffect with the new window
-        setCurrentDate(new Date(date + "T12:00:00"));
-        // Also bump refreshTrigger so if currentDate was already at this date,
-        // loadEvents still re-runs to pick up newly created events
-        setRefreshTrigger((prev) => prev + 1);
-      }
-    };
-
     window.addEventListener("refreshCalendar", handleRefresh);
-    window.addEventListener("navigateCalendarToDate", handleNavigate);
-    return () => {
-      window.removeEventListener("refreshCalendar", handleRefresh);
-      window.removeEventListener("navigateCalendarToDate", handleNavigate);
-    };
+    return () => window.removeEventListener("refreshCalendar", handleRefresh);
   }, []);
 
   const loadUserPreferences = async () => {

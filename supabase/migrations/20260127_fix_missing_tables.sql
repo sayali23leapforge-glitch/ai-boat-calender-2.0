@@ -70,81 +70,75 @@ DROP POLICY IF EXISTS "Users can read own documents" ON documents;
 CREATE POLICY "Users can read own documents"
   ON documents
   FOR SELECT
-  USING (user_id = current_user_id());
+  USING (user_id::text = auth.uid()::text);
 
 DROP POLICY IF EXISTS "Users can insert own documents" ON documents;
 CREATE POLICY "Users can insert own documents"
   ON documents
   FOR INSERT
-  WITH CHECK (user_id = current_user_id());
+  WITH CHECK (user_id::text = auth.uid()::text);
 
 DROP POLICY IF EXISTS "Users can update own documents" ON documents;
 CREATE POLICY "Users can update own documents"
   ON documents
   FOR UPDATE
-  USING (user_id = current_user_id())
-  WITH CHECK (user_id = current_user_id());
+  USING (user_id::text = auth.uid()::text)
+  WITH CHECK (user_id::text = auth.uid()::text);
 
 DROP POLICY IF EXISTS "Users can delete own documents" ON documents;
 CREATE POLICY "Users can delete own documents"
   ON documents
   FOR DELETE
-  USING (user_id = current_user_id());
+  USING (user_id::text = auth.uid()::text);
 
 -- RLS Policies for extracted_events
 DROP POLICY IF EXISTS "Users can read own extracted events" ON extracted_events;
 CREATE POLICY "Users can read own extracted events"
   ON extracted_events
   FOR SELECT
-  USING (user_id = current_user_id());
+  USING (user_id::text = auth.uid()::text);
 
 DROP POLICY IF EXISTS "Users can insert own extracted events" ON extracted_events;
 CREATE POLICY "Users can insert own extracted events"
   ON extracted_events
   FOR INSERT
-  WITH CHECK (user_id = current_user_id());
+  WITH CHECK (user_id::text = auth.uid()::text);
 
 DROP POLICY IF EXISTS "Users can update own extracted events" ON extracted_events;
 CREATE POLICY "Users can update own extracted events"
   ON extracted_events
   FOR UPDATE
-  USING (user_id = current_user_id())
-  WITH CHECK (user_id = current_user_id());
+  USING (user_id::text = auth.uid()::text)
+  WITH CHECK (user_id::text = auth.uid()::text);
 
 DROP POLICY IF EXISTS "Users can delete own extracted events" ON extracted_events;
 CREATE POLICY "Users can delete own extracted events"
   ON extracted_events
   FOR DELETE
-  USING (user_id = current_user_id());
+  USING (user_id::text = auth.uid()::text);
 
 -- RLS Policies for api_keys
 DROP POLICY IF EXISTS "Users can read own API keys" ON api_keys;
 CREATE POLICY "Users can read own API keys"
   ON api_keys
   FOR SELECT
-  USING (user_id = current_user_id());
+  USING (user_id::text = auth.uid()::text);
 
 DROP POLICY IF EXISTS "Users can insert own API keys" ON api_keys;
 CREATE POLICY "Users can insert own API keys"
   ON api_keys
   FOR INSERT
-  WITH CHECK (user_id = current_user_id());
+  WITH CHECK (user_id::text = auth.uid()::text);
 
 DROP POLICY IF EXISTS "Users can update own API keys" ON api_keys;
 CREATE POLICY "Users can update own API keys"
   ON api_keys
   FOR UPDATE
-  USING (user_id = current_user_id())
-  WITH CHECK (user_id = current_user_id());
+  USING (user_id::text = auth.uid()::text)
+  WITH CHECK (user_id::text = auth.uid()::text);
 
 DROP POLICY IF EXISTS "Users can delete own API keys" ON api_keys;
 CREATE POLICY "Users can delete own API keys"
   ON api_keys
   FOR DELETE
-  USING (user_id = current_user_id());
-
--- Helper function to get current user ID (since it's text, not UUID)
--- Note: This uses the auth.uid() from Supabase which is UUID, but we can use JWT claims
-CREATE OR REPLACE FUNCTION current_user_id() RETURNS text AS $$
-  SELECT (auth.jwt() ->> 'sub')::text;
-$$ LANGUAGE sql STABLE;
+  USING (user_id::text = auth.uid()::text);

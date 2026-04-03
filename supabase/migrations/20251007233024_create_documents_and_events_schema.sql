@@ -94,37 +94,45 @@ ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE extracted_events ENABLE ROW LEVEL SECURITY;
 
 -- Public policies for documents table
+DROP POLICY IF EXISTS "Public can view all documents" ON documents;
 CREATE POLICY "Public can view all documents"
   ON documents FOR SELECT
   USING (true);
 
+DROP POLICY IF EXISTS "Public can insert documents" ON documents;
 CREATE POLICY "Public can insert documents"
   ON documents FOR INSERT
   WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Public can update documents" ON documents;
 CREATE POLICY "Public can update documents"
   ON documents FOR UPDATE
   USING (true)
   WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Public can delete documents" ON documents;
 CREATE POLICY "Public can delete documents"
   ON documents FOR DELETE
   USING (true);
 
 -- Public policies for extracted_events table
+DROP POLICY IF EXISTS "Public can view all extracted events" ON extracted_events;
 CREATE POLICY "Public can view all extracted events"
   ON extracted_events FOR SELECT
   USING (true);
 
+DROP POLICY IF EXISTS "Public can insert extracted events" ON extracted_events;
 CREATE POLICY "Public can insert extracted events"
   ON extracted_events FOR INSERT
   WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Public can update extracted events" ON extracted_events;
 CREATE POLICY "Public can update extracted events"
   ON extracted_events FOR UPDATE
   USING (true)
   WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Public can delete extracted events" ON extracted_events;
 CREATE POLICY "Public can delete extracted events"
   ON extracted_events FOR DELETE
   USING (true);

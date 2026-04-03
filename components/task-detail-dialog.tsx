@@ -178,11 +178,13 @@ export function TaskDetailDialog({ task, isOpen, onClose, onUpdate, onDelete }: 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-2">
           <div className="space-y-2">
             <Label htmlFor="goal">Goal</Label>
-            <Input
+            <Textarea
               id="goal"
               value={goal}
               onChange={(e) => setGoal(e.target.value)}
               placeholder="What is this task driving?"
+              rows={3}
+              className="max-h-32 min-h-[4.5rem] resize-y overflow-y-auto scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent"
             />
           </div>
           <div className="space-y-2">

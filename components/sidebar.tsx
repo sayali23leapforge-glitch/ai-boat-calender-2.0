@@ -1,4 +1,5 @@
 "use client"
+import Image from "next/image"
 import { Button } from "@/components/ui/button"
 import {
   Calendar,
@@ -8,17 +9,17 @@ import {
   BarChart3,
   Mail,
   Brain,
-  ChevronLeft,
-  ChevronRight,
   CheckSquare,
   LogOut,
   User,
-  PanelLeftClose,
-  PanelLeftOpen,
 } from "lucide-react"
 import { useState } from "react"
 import { AIQuickCreate } from "./ai-quick-create"
 import { cn } from "@/lib/utils"
+import type { WorkspaceView } from "@/lib/workspace-types"
+
+/** Swap this file in `/public` for your brand asset (e.g. `logo.svg`). */
+const SIDEBAR_LOGO_SRC = "/LOGO.png"
 
 const priorities = [
   { id: "critical", label: "Critical", color: "bg-red-500", count: 3 },
@@ -34,20 +35,19 @@ const goals = [
   { id: "learning", label: "Learning", color: "bg-purple-500", progress: 55 },
 ]
 
-type AllowedView = "tasks" | "calendar" | "goals" | "priorities" | "focus" | "google" | "upload" | "profile"
-
 interface SidebarProps {
-  activeView: AllowedView
-  onViewChange: (view: AllowedView) => void
+  activeView: WorkspaceView
+  onViewChange: (view: WorkspaceView) => void
   userId: string
   onRefresh?: () => void
   onSignOut?: () => void | Promise<void>
 }
 
 export function Sidebar({ activeView, onViewChange, userId, onRefresh, onSignOut }: SidebarProps) {
-  const [miniCalDate, setMiniCalDate] = useState(new Date())
   const [showAICreate, setShowAICreate] = useState(false)
-  const [isCollapsed, setIsCollapsed] = useState(false)
+
+  /* Mini calendar — temporarily disabled (restore when wiring date selection / main calendar)
+  const [miniCalDate, setMiniCalDate] = useState(new Date())
 
   const generateMiniCalendar = () => {
     const year = miniCalDate.getFullYear()
@@ -69,23 +69,19 @@ export function Sidebar({ activeView, onViewChange, userId, onRefresh, onSignOut
 
   const { days, today, month, year } = generateMiniCalendar()
   const monthName = new Date(year, month).toLocaleDateString("en-US", { month: "long", year: "numeric" })
+  */
 
   return (
-    <div className={`${isCollapsed ? "w-16" : "w-64"} glass-strong border-r border-border/50 flex flex-col h-full backdrop-blur-xl transition-all duration-200`}>
-      <div className="p-3 border-b border-border/50">
-        <div className="mb-2 flex items-center justify-end">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setIsCollapsed((prev) => !prev)}>
-            {isCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-          </Button>
-        </div>
-        <Button
-          onClick={() => setShowAICreate(true)}
-          className={`w-full bg-primary/10 hover:bg-primary/20 text-foreground border border-primary/20 shadow-md hover:shadow-lg transition-all duration-300 ${isCollapsed ? "justify-center px-0" : "justify-start"} group`}
-          title="Create"
-        >
-          <Plus className={`h-5 w-5 text-primary group-hover:scale-110 transition-transform duration-300 ${isCollapsed ? "" : "mr-3"}`} />
-          {!isCollapsed && <span className="font-medium">Create</span>}
-        </Button>
+    <div className="w-full min-w-0 glass-strong border-r border-border/50 flex flex-col h-full min-h-0 backdrop-blur-xl">
+      <div className="px-4 py-5 border-b border-border/50 flex items-center justify-center min-h-[5.5rem]">
+        <Image
+          src={SIDEBAR_LOGO_SRC}
+          alt="App logo"
+          width={320}
+          height={96}
+          className="h-16 sm:h-20 w-auto max-w-full object-contain object-left"
+          priority
+        />
       </div>
 
       <AIQuickCreate
@@ -95,8 +91,8 @@ export function Sidebar({ activeView, onViewChange, userId, onRefresh, onSignOut
         onSuccess={onRefresh}
       />
 
-      <div className={`flex-1 overflow-y-auto ${isCollapsed ? "p-2 space-y-3" : "p-4 space-y-6"} scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent`}>
-        {!isCollapsed && (
+      <div className="flex-1 overflow-y-auto p-4 space-y-6 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent">
+        {/* Mini calendar — temporarily disabled (see commented block at top of Sidebar)
         <div className="space-y-2">
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm font-semibold text-foreground">{monthName}</span>
@@ -154,134 +150,129 @@ export function Sidebar({ activeView, onViewChange, userId, onRefresh, onSignOut
             })}
           </div>
         </div>
-        )}
+        */}
 
         <div className="space-y-1">
           <Button
             variant="ghost"
             className={cn(
-              `w-full ${isCollapsed ? "justify-center px-0" : "justify-start"} text-sm font-medium transition-all duration-200 rounded-lg`,
+              "w-full justify-start text-sm font-medium transition-all duration-200 rounded-lg",
               activeView === "calendar"
                 ? "bg-primary/10 text-primary shadow-sm"
                 : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             )}
             onClick={() => onViewChange("calendar")}
-            title="Calendar"
           >
-            <Calendar className={cn(`h-4 w-4 ${isCollapsed ? "" : "mr-3"} transition-transform duration-200`, activeView === "calendar" && "scale-110")} />
-            {!isCollapsed && "Calendar"}
+            <Calendar className={cn("h-4 w-4 mr-3 transition-transform duration-200", activeView === "calendar" && "scale-110")} />
+            Calendar
           </Button>
 
           <Button
             variant="ghost"
             className={cn(
-              `w-full ${isCollapsed ? "justify-center px-0" : "justify-start"} text-sm font-medium transition-all duration-200 rounded-lg`,
+              "w-full justify-start text-sm font-medium transition-all duration-200 rounded-lg",
               activeView === "tasks"
                 ? "bg-primary/10 text-primary shadow-sm"
                 : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             )}
             onClick={() => onViewChange("tasks")}
-            title="Tasks"
           >
-            <CheckSquare className={cn(`h-4 w-4 ${isCollapsed ? "" : "mr-3"} transition-transform duration-200`, activeView === "tasks" && "scale-110")} />
-            {!isCollapsed && "Tasks"}
+            <CheckSquare className={cn("h-4 w-4 mr-3 transition-transform duration-200", activeView === "tasks" && "scale-110")} />
+            Tasks
           </Button>
 
           <Button
             variant="ghost"
             className={cn(
-              `w-full ${isCollapsed ? "justify-center px-0" : "justify-start"} text-sm font-medium transition-all duration-200 rounded-lg`,
+              "w-full justify-start text-sm font-medium transition-all duration-200 rounded-lg",
               activeView === "goals"
                 ? "bg-primary/10 text-primary shadow-sm"
                 : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             )}
             onClick={() => onViewChange("goals")}
-            title="Goals"
           >
-            <Target className={cn(`h-4 w-4 ${isCollapsed ? "" : "mr-3"} transition-transform duration-200`, activeView === "goals" && "scale-110")} />
-            {!isCollapsed && "Goals"}
+            <Target className={cn("h-4 w-4 mr-3 transition-transform duration-200", activeView === "goals" && "scale-110")} />
+            Goals
           </Button>
 
           <Button
             variant="ghost"
             className={cn(
-              `w-full ${isCollapsed ? "justify-center px-0" : "justify-start"} text-sm font-medium transition-all duration-200 rounded-lg`,
+              "w-full justify-start text-sm font-medium transition-all duration-200 rounded-lg",
               activeView === "priorities"
                 ? "bg-primary/10 text-primary shadow-sm"
                 : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             )}
             onClick={() => onViewChange("priorities")}
-            title="Priorities"
           >
-            <BarChart3 className={cn(`h-4 w-4 ${isCollapsed ? "" : "mr-3"} transition-transform duration-200`, activeView === "priorities" && "scale-110")} />
-            {!isCollapsed && "Priorities"}
+            <BarChart3 className={cn("h-4 w-4 mr-3 transition-transform duration-200", activeView === "priorities" && "scale-110")} />
+            Priorities
           </Button>
 
           <Button
             variant="ghost"
             className={cn(
-              `w-full ${isCollapsed ? "justify-center px-0" : "justify-start"} text-sm font-medium transition-all duration-200 rounded-lg`,
+              "w-full justify-start text-sm font-medium transition-all duration-200 rounded-lg",
               activeView === "focus"
                 ? "bg-primary/10 text-primary shadow-sm"
                 : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             )}
             onClick={() => onViewChange("focus")}
-            title="Focus Mode"
           >
-            <Brain className={cn(`h-4 w-4 ${isCollapsed ? "" : "mr-3"} transition-transform duration-200`, activeView === "focus" && "scale-110")} />
-            {!isCollapsed && "Focus Mode"}
+            <Brain className={cn("h-4 w-4 mr-3 transition-transform duration-200", activeView === "focus" && "scale-110")} />
+            Focus Mode
           </Button>
 
           <Button
             variant="ghost"
             className={cn(
-              `w-full ${isCollapsed ? "justify-center px-0" : "justify-start"} text-sm font-medium transition-all duration-200 rounded-lg`,
+              "w-full justify-start text-sm font-medium transition-all duration-200 rounded-lg",
               activeView === "google"
                 ? "bg-primary/10 text-primary shadow-sm"
                 : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             )}
             onClick={() => onViewChange("google")}
-            title="Integrations"
           >
-            <Mail className={cn(`h-4 w-4 ${isCollapsed ? "" : "mr-3"} transition-transform duration-200`, activeView === "google" && "scale-110")} />
-            {!isCollapsed && "Integrations"}
+            <Mail className={cn("h-4 w-4 mr-3 transition-transform duration-200", activeView === "google" && "scale-110")} />
+            Integrations
           </Button>
 
           <Button
             variant="ghost"
             className={cn(
-              `w-full ${isCollapsed ? "justify-center px-0" : "justify-start"} text-sm font-medium transition-all duration-200 rounded-lg`,
+              "w-full justify-start text-sm font-medium transition-all duration-200 rounded-lg",
               activeView === "upload"
                 ? "bg-primary/10 text-primary shadow-sm"
                 : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             )}
             onClick={() => onViewChange("upload")}
-            title="Upload"
           >
-            <Upload className={cn(`h-4 w-4 ${isCollapsed ? "" : "mr-3"} transition-transform duration-200`, activeView === "upload" && "scale-110")} />
-            {!isCollapsed && "Upload"}
+            <Upload className={cn("h-4 w-4 mr-3 transition-transform duration-200", activeView === "upload" && "scale-110")} />
+            Upload
           </Button>
 
           <Button
             variant="ghost"
             className={cn(
-              `w-full ${isCollapsed ? "justify-center px-0" : "justify-start"} text-sm font-medium transition-all duration-200 rounded-lg`,
+              "w-full justify-start text-sm font-medium transition-all duration-200 rounded-lg",
               activeView === "profile"
                 ? "bg-primary/10 text-primary shadow-sm"
                 : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             )}
             onClick={() => onViewChange("profile")}
-            title="Profile"
           >
-            <User className={cn(`h-4 w-4 ${isCollapsed ? "" : "mr-3"} transition-transform duration-200`, activeView === "profile" && "scale-110")} />
-            {!isCollapsed && "Profile"}
+            <User className={cn("h-4 w-4 mr-3 transition-transform duration-200", activeView === "profile" && "scale-110")} />
+            Profile
           </Button>
         </div>
 
-        {!isCollapsed && (
         <div className="space-y-2">
           <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2">My Calendars</h3>
-          <div className="space-y-1">
+          <div
+            className="max-h-[min(12rem,40vh)] space-y-1 overflow-y-auto overflow-x-hidden pr-1 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent"
+            role="region"
+            aria-label="Goals"
+          >
             {goals.map((goal) => (
               <div
                 key={goal.id}
@@ -295,22 +286,31 @@ export function Sidebar({ activeView, onViewChange, userId, onRefresh, onSignOut
             ))}
           </div>
         </div>
-        )}
       </div>
 
-      {onSignOut && (
-        <div className="p-4 border-t border-border/50 mt-auto">
+      <div className="mt-auto shrink-0 border-t border-border/50">
+        <div className="p-4">
           <Button
-            variant="ghost"
-            className={`w-full ${isCollapsed ? "justify-center px-0" : "justify-start"} text-sm font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive rounded-lg transition-all duration-200`}
-            onClick={() => onSignOut()}
-            title="Sign out"
+            onClick={() => setShowAICreate(true)}
+            className="w-full bg-primary/10 hover:bg-primary/20 text-foreground border border-primary/20 shadow-md hover:shadow-lg transition-all duration-300 justify-start group"
           >
-            <LogOut className={`h-4 w-4 ${isCollapsed ? "" : "mr-3"}`} />
-            {!isCollapsed && "Sign out"}
+            <Plus className="h-5 w-5 mr-3 text-primary group-hover:scale-110 transition-transform duration-300" />
+            <span className="font-medium">Create</span>
           </Button>
         </div>
-      )}
+        {onSignOut && (
+          <div className="px-4 pb-4 pt-0">
+            <Button
+              variant="ghost"
+              className="w-full justify-start text-sm font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive rounded-lg transition-all duration-200"
+              onClick={() => onSignOut()}
+            >
+              <LogOut className="h-4 w-4 mr-3" />
+              Sign out
+            </Button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

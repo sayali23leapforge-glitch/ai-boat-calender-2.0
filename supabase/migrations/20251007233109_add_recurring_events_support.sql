@@ -97,22 +97,34 @@ CREATE INDEX IF NOT EXISTS idx_extracted_events_semester ON extracted_events(sem
 ALTER TABLE semester_windows ENABLE ROW LEVEL SECURITY;
 
 -- Public policies for semester_windows
+DROP POLICY IF EXISTS "Public can view semester windows" ON semester_windows;
 CREATE POLICY "Public can view semester windows"
   ON semester_windows FOR SELECT
   USING (true);
 
+DROP POLICY IF EXISTS "Public can insert semester windows" ON semester_windows;
 CREATE POLICY "Public can insert semester windows"
   ON semester_windows FOR INSERT
   WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Public can update semester windows" ON semester_windows;
 CREATE POLICY "Public can update semester windows"
   ON semester_windows FOR UPDATE
   USING (true)
   WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Public can delete semester windows" ON semester_windows;
 CREATE POLICY "Public can delete semester windows"
   ON semester_windows FOR DELETE
   USING (true);
 
 -- Enable realtime for semester_windows
-ALTER PUBLICATION supabase_realtime ADD TABLE semester_windows;
+DO $$
+BEGIN
+  BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE semester_windows;
+  EXCEPTION
+    WHEN duplicate_object THEN
+      RAISE NOTICE 'semester_windows already in supabase_realtime publication';
+  END;
+END $$;
