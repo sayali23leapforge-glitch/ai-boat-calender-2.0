@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+﻿import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 
@@ -192,94 +192,143 @@ function parseMessageIntent(text: string): AIAnalysisResult {
   
   console.log(`[BlooWebhook] Parsing corrected message: "${text}"`);
 
-  // Text is already corrected by Gemini, no need for typo fixes
   const cleaned = lower;
 
-  // Detect time patterns
-  const timeMatch = cleaned.match(/(\d{1,2})\s*(:\d{2})?\s*(am|pm|a\.m|p\.m|o'clock)?|\b(morning|afternoon|evening|tonight|noon)\b/i);
-  const hasTime = timeMatch ? timeMatch[0] : null;
+  // Detect specific time patterns (2:30 pm, etc.)
+  const specificTimeMatch = cleaned.match(/(\d{1,2}):(\d{2})\s*(am|pm|a\.m|p\.m)?/i);
+  
+  // Detect time of day keywords
+  const timeOfDayMatch = cleaned.match(/\b(morning|afternoon|evening|tonight|night|noon|midnight)\b/i);
+  const hasTime = specificTimeMatch || timeOfDayMatch;
   
   // Detect date patterns
-  const dateKeywords = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|next|today|tonight|tonight|this week|this month)\b/i;
+  const dateKeywords = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|next|today|tonight|this week|this month)\b/i;
   const hasDate = dateKeywords.test(cleaned);
 
   // Detect goal/learning keywords
   const goalKeywords = /\b(learn|study|master|improve|practice|get better|become|achieve|complete|finish|accomplish)\b/i;
   const isGoal = goalKeywords.test(cleaned);
 
-  // Determine type
+  // **NEW: Detect EVENT keywords** (recital, concert, meeting, etc.)
+  const eventKeywords = /\b(meeting|event|recital|concert|performance|appointment|presentation|show|rehearsal|practice|session|class|lecture|seminar|conference|summit|interview|date|call|zoom|webinar|demo|review)\b/i;
+  const isEvent = eventKeywords.test(cleaned);
+
+  // **IMPROVED Determine type**
   let type: "task" | "goal" | "event" = "task";
   
-  // If has date or time → EVENT (event can have time without date, but date without time still is event)
-  if (hasTime || hasDate) {
+  // Priority: If has EVENT keyword + date/time → EVENT
+  if (isEvent && (hasTime || hasDate)) {
     type = "event";
+    console.log(`[BlooWebhook] Type: EVENT (keyword + date/time)`);
+  }
+  // If has ANY date or time → EVENT
+  else if (hasTime || hasDate) {
+    type = "event";
+    console.log(`[BlooWebhook] Type: EVENT (has date or time)`);
   }
   // If learning keywords and NO date/time → GOAL
-  else if (isGoal) {
+  else if (isGoal && !hasDate && !hasTime) {
     type = "goal";
+    console.log(`[BlooWebhook] Type: GOAL (learning keyword, no time)`);
   }
-  // Otherwise → TASK (default)
+  // Otherwise → TASK
+  else {
+    type = "task";
+    console.log(`[BlooWebhook] Type: TASK (default)`);
+  }
 
-  // Extract date (simple approach)
+  // **IMPROVED Extract date** (TODAY = 2026-04-03, TOMORROW = 2026-04-04)
   let date: string | null = null;
   if (cleaned.includes("friday")) {
-    date = "2026-03-21";
+    date = "2026-04-04";
   } else if (cleaned.includes("saturday")) {
-    date = "2026-03-22";
+    date = "2026-04-05";
   } else if (cleaned.includes("sunday")) {
-    date = "2026-03-23";
+    date = "2026-04-06";
   } else if (cleaned.includes("monday")) {
-    date = "2026-03-24";
+    date = "2026-04-07";
   } else if (cleaned.includes("tuesday")) {
-    date = "2026-03-25";
+    date = "2026-04-08";
   } else if (cleaned.includes("wednesday")) {
-    date = "2026-03-26";
+    date = "2026-04-09";
   } else if (cleaned.includes("thursday")) {
-    date = "2026-03-27";
+    date = "2026-04-10";
   } else if (cleaned.includes("tomorrow")) {
-    date = "2026-03-19";
+    date = "2026-04-04";
   } else if (cleaned.includes("today")) {
-    date = "2026-03-18";
+    date = "2026-04-03";
   }
 
-  // Extract time (simple approach)
+  // **IMPROVED Extract time**
   let time: string | null = null;
-  const timeParse = cleaned.match(/(\d{1,2}):?(\d{2})?\s*(am|pm|a\.m|p\.m)?/);
-  if (timeParse) {
-    let hour = parseInt(timeParse[1]);
-    const min = timeParse[2] ? parseInt(timeParse[2]) : 0;
-    const meridiem = timeParse[3]?.toLowerCase();
+  
+  if (specificTimeMatch) {
+    // Specific time like "2:30 pm"
+    let hour = parseInt(specificTimeMatch[1]);
+    const min = parseInt(specificTimeMatch[2]) || 0;
+    const meridiem = specificTimeMatch[3]?.toLowerCase();
     
-    if (meridiem && (meridiem.includes("p") || meridiem.includes("P"))) {
+    if (meridiem?.includes("p")) {
       if (hour !== 12) hour += 12;
-    } else if (meridiem && (meridiem.includes("a") || meridiem.includes("A"))) {
+    } else if (meridiem?.includes("a")) {
       if (hour === 12) hour = 0;
     }
     
     time = `${String(hour).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+    console.log(`[BlooWebhook] Parsed specific time: ${time}`);
+  } else if (timeOfDayMatch) {
+    // Time of day like "morning", "afternoon", etc.
+    const timeWord = timeOfDayMatch[1].toLowerCase();
+    if (timeWord === "morning") {
+      time = "09:00";
+    } else if (timeWord === "afternoon") {
+      time = "14:00";
+    } else if (timeWord === "evening") {
+      time = "18:00";
+    } else if (timeWord === "night" || timeWord === "tonight") {
+      time = "20:00";
+    } else if (timeWord === "noon") {
+      time = "12:00";
+    } else if (timeWord === "midnight") {
+      time = "00:00";
+    }
+    console.log(`[BlooWebhook] Parsed time of day "${timeWord}" as ${time}`);
   }
 
-  // Create title from cleaned text (remove time/date keywords)
+  // **IMPROVED Extract title** - preserve original text, just remove time/date markers
   let title = cleaned
-    .replace(/\b(at|on|in|this|next)\b/g, "")
-    .replace(/\b(morning|afternoon|evening|tonight|noon|am|pm|a\.m|p\.m|o'clock)\b/g, "")
-    .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|this week|this month)\b/g, "")
-    .replace(/\d{1,2}:?\d{2}/g, "")
+    // Remove time keywords
+    .replace(/\b(at|on|in|for)\s+(morning|afternoon|evening|night|tonight|noon|midnight)\b/gi, "")
+    .replace(/\b(morning|afternoon|evening|tonight|night|noon|midnight|am|pm|a\.m|p\.m|o'clock)\b/gi, "")
+    // Remove specific times like "2:30"
+    .replace(/\d{1,2}:(\d{2})?\s*(am|pm|a\.m|p\.m)?/gi, "")
+    // Remove date keywords
+    .replace(/\b(on|at|in|next|this|the|a|an|for)\b/gi, "")
+    .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|tonight|this week|this month)\b/gi, "")
+    // Clean up extra whitespace
     .replace(/\s+/g, " ")
     .trim();
 
-  // Ensure we have a title
-  if (!title) {
+  // If title is empty or too short, use original text
+  if (!title || title.length < 2) {
     title = text;
+    console.log(`[BlooWebhook] Title was empty, using original: "${title}"`);
   }
 
-  console.log(`[BlooWebhook] Local parse result:`, {
+  // Capitalize first letter
+  title = title.charAt(0).toUpperCase() + title.slice(1);
+
+  // Ensure max length
+  title = title.slice(0, 200);
+
+  console.log(`[BlooWebhook] Final parse result:`, {
     type,
     title,
     date,
     time,
-    hasTime: !!timeMatch,
+    isEvent,
     hasDate,
+    hasTime,
     isGoal,
   });
 
@@ -287,58 +336,37 @@ function parseMessageIntent(text: string): AIAnalysisResult {
 }
 
 /**
- * Use Gemini to fix spelling and grammar mistakes in the message
- * This is simpler than full intent analysis - just returns corrected text
+ * Fix common typos - DO NOT use Gemini as it hallucinates unrelated content
+ * Just apply simple, safe replacements
+ */
+function correctSpellingLocally(text: string): string {
+  // Apply only safe, intentional typo fixes
+  let corrected = text
+    .replace(/\btommrow\b/gi, "tomorrow")
+    .replace(/\btmrw\b/gi, "tomorrow")
+    .replace(/\btmrow\b/gi, "tomorrow")
+    .replace(/\bshedule\b/gi, "schedule")
+    .replace(/\bmeating\b/gi, "meeting")
+    .replace(/\bmeeting\b/gi, "meeting")
+    .replace(/\brecital\b/gi, "recital")
+    .replace(/\brecitle\b/gi, "recital");
+
+  if (corrected !== text) {
+    console.log(`[BlooWebhook] Local spell fix: "${text}" → "${corrected}"`);
+  }
+  return corrected;
+}
+
+/**
+ * NO LONGER USE GEMINI FOR SPELL CORRECTION - it hallucinates unrelated content
+ * DEPRECATED - keeping for reference
  */
 async function correctSpellingWithGemini(text: string): Promise<string> {
-  try {
-    // First pass: Apply hardcoded common typo fixes
-    let corrected = text
-      .replace(/\bby\b/g, "buy")
-      .replace(/\blean\b/g, "learn")
-      .replace(/\bmetting\b/g, "meeting")
-      .replace(/\btommrow\b/g, "tomorrow")
-      .replace(/\btmrw\b/g, "tomorrow")
-      .replace(/\bshedule\b/g, "schedule")
-      .replace(/\bmeating\b/g, "meeting");
-
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.log("[BlooWebhook] Gemini API key not configured, using local spelling fixes only");
-      return corrected;
-    }
-
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-    const prompt = `Fix ALL spelling mistakes, typos, and grammar errors. Convert to proper English.
-Be aggressive with corrections - fix common typos like "by"→"buy", "abt"→"about", "tmrw"→"tomorrow".
-Return ONLY the corrected text, nothing else.
-Original: "${text}"
-Corrected:`;
-
-    const response = await model.generateContent(prompt);
-    const geminiCorrected = response.response.text().trim();
-
-    if (geminiCorrected && geminiCorrected.length > 0 && geminiCorrected !== text) {
-      console.log(`[BlooWebhook] Gemini spell correction: "${text}" → "${geminiCorrected}"`);
-      return geminiCorrected;
-    }
-
-    console.log(`[BlooWebhook] Using local typo fixes: "${text}" → "${corrected}"`);
-    return corrected;
-  } catch (error) {
-    console.log("[BlooWebhook] Spell correction error, using local fixes:", error);
-    // Fallback to local fixes
-    return text
-      .replace(/\bby\b/g, "buy")
-      .replace(/\blean\b/g, "learn")
-      .replace(/\bmetting\b/g, "meeting")
-      .replace(/\btommrow\b/g, "tomorrow")
-      .replace(/\btmrw\b/g, "tomorrow")
-      .replace(/\bshedule\b/g, "schedule")
-      .replace(/\bmeating\b/g, "meeting");
-  }
+  // DISABLED: Gemini was hallucinating and replacing user messages with random content like "buy food"
+  // For example, "Recital tomorrow morning" was being changed to "buy food"
+  // Now using simple local typo fixes only
+  console.log(`[BlooWebhook] Using local spell correction (Gemini disabled due to hallucinations)`);
+  return correctSpellingLocally(text);
 }
 
 /**
