@@ -447,6 +447,27 @@ export async function POST(req: NextRequest) {
     // Get Supabase admin client
     const admin = getSupabaseAdminClient();
 
+    // Store/Update Bloo number in app_config (auto-sync to all profiles)
+    const blooNumber = payload.internal_id as string;
+    if (blooNumber) {
+      console.log("[BlooWebhook] Storing Bloo number in app_config:", blooNumber);
+      const { error: configError } = await admin
+        .from("app_config")
+        .upsert({
+          key: "global_bloo_number",
+          bloo_number: blooNumber,
+          updated_at: new Date().toISOString(),
+        }, {
+          onConflict: "key",
+        });
+
+      if (configError) {
+        console.error("[BlooWebhook] Failed to store Bloo number:", configError);
+      } else {
+        console.log("[BlooWebhook] ✓ Bloo number stored successfully");
+      }
+    }
+
     // Find user by phone number
     console.log("[BlooWebhook] Looking up user by phone:", normalizedPhone);
     const { data: profile, error: profileError } = await admin

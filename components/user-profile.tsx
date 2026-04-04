@@ -16,10 +16,12 @@ interface UserStats {
 export function UserProfile() {
   const [user, setUser] = useState<any>(null)
   const [phone, setPhone] = useState("")
+  const [blooNumber, setBlooNumber] = useState("")
   const [imessageConnected, setImessageConnected] = useState(false)
   const [editingPhone, setEditingPhone] = useState(false)
   const [newPhone, setNewPhone] = useState("")
   const [isLoading, setIsLoading] = useState(false)
+  const [isRefreshingBlooNumber, setIsRefreshingBlooNumber] = useState(false)
   const [stats, setStats] = useState<UserStats>({ tasksCount: 0, goalsCount: 0, eventsCount: 0 })
 
   useEffect(() => {
@@ -54,6 +56,20 @@ export function UserProfile() {
         console.log("[Frontend] Phone loaded:", phoneData.phone)
         setPhone(phoneData.phone || "")
         setNewPhone(phoneData.phone || "")
+      }
+
+      // Get Bloo number from app_config
+      const blooResponse = await fetch("/api/bloo/number", {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+      })
+
+      if (blooResponse.ok) {
+        const blooData = await blooResponse.json()
+        console.log("[Frontend] Bloo number loaded:", blooData.blooNumber)
+        setBlooNumber(blooData.blooNumber || "Not set")
       }
 
       // Get stats
@@ -137,6 +153,39 @@ export function UserProfile() {
   const handleCancel = () => {
     setNewPhone(phone)
     setEditingPhone(false)
+  }
+
+  const handleRefreshBlooNumber = async () => {
+    try {
+      setIsRefreshingBlooNumber(true)
+
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+      if (sessionError || !session) {
+        toast.error("Not authenticated")
+        return
+      }
+
+      const blooResponse = await fetch("/api/bloo/number", {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+      })
+
+      if (blooResponse.ok) {
+        const blooData = await blooResponse.json()
+        console.log("[Frontend] Bloo number refreshed:", blooData.blooNumber)
+        setBlooNumber(blooData.blooNumber || "Not set")
+        toast.success("✓ Bloo number refreshed")
+      } else {
+        toast.error("Failed to refresh Bloo number")
+      }
+    } catch (error) {
+      console.error("Error refreshing Bloo number:", error)
+      toast.error("Error refreshing Bloo number")
+    } finally {
+      setIsRefreshingBlooNumber(false)
+    }
   }
 
   if (!user) {
@@ -230,7 +279,31 @@ export function UserProfile() {
             </p>
           </div>
 
-          {/* Stats Section */}
+          {/* Bloo Number Section (Read-only, Auto-updated) */}
+          <div className="space-y-2 pt-4 border-t border-border/30">
+            <label className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Phone className="h-4 w-4 text-blue-600" />
+              Bloo Number (SMS Webhook)
+            </label>
+            
+            <div className="flex items-center justify-between bg-muted/50 border border-border/30 rounded-lg p-3">
+              <span className="font-mono font-medium text-foreground">
+                {blooNumber || "Loading..."}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRefreshBlooNumber}
+                disabled={isRefreshingBlooNumber}
+                className="gap-2"
+              >
+                {isRefreshingBlooNumber ? "Refreshing..." : "Refresh"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              This number automatically syncs from Bloo whenever a message is received. Send SMS to this number to create tasks, goals, or events.
+            </p>
+          </div>
           <div className="space-y-3 pt-4 border-t border-border/30">
             <h3 className="text-sm font-semibold text-foreground">Your Activity</h3>
             <div className="grid grid-cols-3 gap-4">
