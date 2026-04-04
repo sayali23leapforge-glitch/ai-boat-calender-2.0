@@ -4,6 +4,52 @@ import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 
 export const runtime = "nodejs";
 
+/**
+ * Send response message back to user via Bloo
+ */
+async function sendBlooReply(
+  recipientPhone: string,
+  message: string
+): Promise<boolean> {
+  try {
+    const blooApiKey = process.env.BLOO_API_KEY;
+    const blooOrgId = process.env.BLOO_ORG_ID;
+
+    if (!blooApiKey || !blooOrgId) {
+      console.log("[BlooWebhook] Bloo API credentials not configured, skipping reply");
+      return false;
+    }
+
+    console.log(`[BlooWebhook] Sending Bloo reply to ${recipientPhone}: ${message}`);
+
+    const response = await fetch("https://api.blooio.com/messages/send", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${blooApiKey}`,
+        "X-Org-ID": blooOrgId,
+      },
+      body: JSON.stringify({
+        to: recipientPhone,
+        text: message,
+        format: "text",
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      console.error("[BlooWebhook] Failed to send Bloo reply:", error);
+      return false;
+    }
+
+    console.log("[BlooWebhook] ✓ Bloo reply sent successfully");
+    return true;
+  } catch (error) {
+    console.error("[BlooWebhook] Exception sending Bloo reply:", error);
+    return false;
+  }
+}
+
 // ============================================================================
 // Types & Interfaces
 // ============================================================================
@@ -603,6 +649,11 @@ export async function POST(req: NextRequest) {
         }
 
         console.log("[BlooWebhook] Task created successfully");
+        
+        // Send confirmation message back to user
+        const replyMessage = `✓ Task created: "${aiAnalysis.title}"${aiAnalysis.date ? ` (${aiAnalysis.date})` : ""}`;
+        await sendBlooReply(normalizedPhone, replyMessage);
+        
         return NextResponse.json({ message: "Task created" }, { status: 200 });
       } catch (error) {
         console.log("[BlooWebhook] Task creation error:", error);
@@ -633,6 +684,11 @@ export async function POST(req: NextRequest) {
         }
 
         console.log("[BlooWebhook] Goal created successfully");
+        
+        // Send confirmation message back to user
+        const replyMessage = `🎯 Goal created: "${aiAnalysis.title}"`;
+        await sendBlooReply(normalizedPhone, replyMessage);
+        
         return NextResponse.json({ message: "Goal created" }, { status: 200 });
       } catch (error) {
         console.log("[BlooWebhook] Goal creation error:", error);
@@ -680,6 +736,11 @@ export async function POST(req: NextRequest) {
         }
 
         console.log("[BlooWebhook] Event created successfully");
+        
+        // Send confirmation message back to user
+        const replyMessage = `📅 Event created: "${aiAnalysis.title}"${aiAnalysis.time ? ` at ${aiAnalysis.time}` : ""} on ${aiAnalysis.date}`;
+        await sendBlooReply(normalizedPhone, replyMessage);
+        
         return NextResponse.json({ message: "Event created" }, { status: 200 });
       } catch (error) {
         console.log("[BlooWebhook] Event creation error:", error);
