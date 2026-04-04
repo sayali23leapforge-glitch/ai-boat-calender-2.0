@@ -405,13 +405,14 @@ export async function POST(req: NextRequest) {
     console.log("[BlooWebhook] Payload Keys:", Object.keys(payload));
     console.log("[BlooWebhook] ===== RAW PAYLOAD END =====");
 
-    // ⚠️ IMPORTANT: Only process "message.sent" events
-    // Ignore "message.delivered", "message.read", etc. to prevent duplicates
+    // ⚠️ IMPORTANT: Only process "message.received" events
+    // This is when a user sends a message to the Bloo number
+    // Ignore "delivered", "read", etc. to prevent duplicates
     const eventType = (payload as any).event;
     console.log(`[BlooWebhook] Event type: ${eventType}`);
 
-    if (eventType && eventType !== "message.sent") {
-      console.log(`[BlooWebhook] Ignoring event type: ${eventType} (only processing message.sent)`);
+    if (eventType && eventType !== "message.received") {
+      console.log(`[BlooWebhook] Ignoring event type: ${eventType} (only processing message.received)`);
       return NextResponse.json({ message: "Event ignored" }, { status: 200 });
     }
 
