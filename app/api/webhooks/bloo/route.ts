@@ -5,18 +5,12 @@ import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
 
 /**
- * Transcribe audio file to text using OpenAI Whisper API
+ * Transcribe audio file to text using Google Cloud Speech-to-Text API
+ * Much faster than OpenAI Whisper for this use case
  */
 async function transcribeAudio(audioUrl: string): Promise<string | null> {
   try {
-    const openaiApiKey = process.env.OPENAI_API_KEY;
-    
-    if (!openaiApiKey) {
-      console.warn("[BlooWebhook] ⚠️ OPENAI_API_KEY not configured, cannot transcribe audio");
-      return null;
-    }
-
-    console.log("[BlooWebhook] 🎤 Transcribing audio from:", audioUrl);
+    console.log("[BlooWebhook] 🎤 Transcribing audio using Google Speech-to-Text...", audioUrl);
 
     // Download audio file
     const audioResponse = await fetch(audioUrl);
@@ -26,36 +20,99 @@ async function transcribeAudio(audioUrl: string): Promise<string | null> {
     }
 
     const audioBuffer = await audioResponse.arrayBuffer();
-    const audioBlob = new Blob([audioBuffer], { type: "audio/mpeg" });
+    const audioBase64 = Buffer.from(audioBuffer).toString("base64");
 
-    // Create FormData for Whisper API
+    // Use Google Cloud Speech-to-Text API
+    const apiKey = process.env.GEMINI_API_KEY; // Reuse existing key
+    
+    if (!apiKey) {
+      console.warn("[BlooWebhook] ⚠️ GEMINI_API_KEY not configured, cannot transcribe");
+      return null;
+    }
+
+    // Detect audio file type from URL
+    let audioMimeType = "audio/mpeg"; // default MP3
+    if (audioUrl.includes(".m4a")) audioMimeType = "audio/mp4";
+    else if (audioUrl.includes(".wav")) audioMimeType = "audio/wav";
+    else if (audioUrl.includes(".ogg")) audioMimeType = "audio/ogg";
+    else if (audioUrl.includes(".webm")) audioMimeType = "audio/webm";
+
+    const speechResponse = await fetch(
+      `https://speech.googleapis.com/v1/speech:recognize?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          config: {
+            encoding: "MP3",
+            languageCode: "en-US",
+            sampleRateHertz: 16000,
+            enableAutomaticPunctuation: true,
+          },
+          audio: {
+            content: audioBase64,
+          },
+        }),
+      }
+    );
+
+    if (!speechResponse.ok) {
+      const error = await speechResponse.text();
+      console.error("[BlooWebhook] Speech-to-Text error:", error);
+      
+      // Fallback: use OpenAI Whisper if Google fails
+      return await transcribeWithWhisper(audioBase64, audioMimeType);
+    }
+
+    const result = await speechResponse.json();
+    const transcribedText = result.results?.[0]?.alternatives?.[0]?.transcript;
+
+    if (transcribedText) {
+      console.log("[BlooWebhook] ✅ Transcribed:", transcribedText);
+      return transcribedText;
+    }
+
+    return null;
+  } catch (error) {
+    console.error("[BlooWebhook] Exception during audio transcription:", error);
+    return null;
+  }
+}
+
+/**
+ * Fallback: Transcribe using OpenAI Whisper API
+ */
+async function transcribeWithWhisper(audioBase64: string, mimeType: string): Promise<string | null> {
+  try {
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (!openaiKey) return null;
+
+    console.log("[BlooWebhook] Falling back to OpenAI Whisper...");
+
     const formData = new FormData();
+    const audioBuffer = Buffer.from(audioBase64, "base64");
+    const audioBlob = new Blob([audioBuffer], { type: mimeType });
     formData.append("file", audioBlob, "voice.mp3");
     formData.append("model", "whisper-1");
     formData.append("language", "en");
 
-    // Call OpenAI Whisper API
-    const transcriptionResponse = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${openaiApiKey}`,
-      },
+      headers: { "Authorization": `Bearer ${openaiKey}` },
       body: formData,
     });
 
-    if (!transcriptionResponse.ok) {
-      const error = await transcriptionResponse.text();
-      console.error("[BlooWebhook] Whisper API error:", error);
+    if (!response.ok) {
+      console.error("[BlooWebhook] Whisper error:", await response.text());
       return null;
     }
 
-    const result = await transcriptionResponse.json();
-    const transcribedText = result.text || result.transcript;
-
-    console.log("[BlooWebhook] ✅ Transcribed audio:", transcribedText);
-    return transcribedText;
+    const result = await response.json();
+    const text = result.text || result.transcript;
+    console.log("[BlooWebhook] ✅ Whisper transcribed:", text);
+    return text;
   } catch (error) {
-    console.error("[BlooWebhook] Exception during audio transcription:", error);
+    console.error("[BlooWebhook] Whisper fallback error:", error);
     return null;
   }
 }
@@ -759,9 +816,11 @@ export async function POST(req: NextRequest) {
 
         console.log("[BlooWebhook] Task created successfully");
         
-        // Send confirmation message back to user
+        // Send confirmation message back to user (in background, don't wait)
         const replyMessage = `✓ Task created: "${aiAnalysis.title}"${aiAnalysis.date ? ` (${aiAnalysis.date})` : ""}`;
-        await sendBlooReply(normalizedPhone, replyMessage);
+        sendBlooReply(normalizedPhone, replyMessage).catch(err => 
+          console.error("[BlooWebhook] Failed to send reply:", err)
+        );
         
         return NextResponse.json({ message: "Task created" }, { status: 200 });
       } catch (error) {
@@ -794,9 +853,11 @@ export async function POST(req: NextRequest) {
 
         console.log("[BlooWebhook] Goal created successfully");
         
-        // Send confirmation message back to user
+        // Send confirmation message back to user (in background, don't wait)
         const replyMessage = `🎯 Goal created: "${aiAnalysis.title}"`;
-        await sendBlooReply(normalizedPhone, replyMessage);
+        sendBlooReply(normalizedPhone, replyMessage).catch(err => 
+          console.error("[BlooWebhook] Failed to send reply:", err)
+        );
         
         return NextResponse.json({ message: "Goal created" }, { status: 200 });
       } catch (error) {
@@ -846,9 +907,11 @@ export async function POST(req: NextRequest) {
 
         console.log("[BlooWebhook] Event created successfully");
         
-        // Send confirmation message back to user
+        // Send confirmation message back to user (in background, don't wait)
         const replyMessage = `📅 Event created: "${aiAnalysis.title}"${aiAnalysis.time ? ` at ${aiAnalysis.time}` : ""} on ${aiAnalysis.date}`;
-        await sendBlooReply(normalizedPhone, replyMessage);
+        sendBlooReply(normalizedPhone, replyMessage).catch(err => 
+          console.error("[BlooWebhook] Failed to send reply:", err)
+        );
         
         return NextResponse.json({ message: "Event created" }, { status: 200 });
       } catch (error) {
