@@ -5,6 +5,62 @@ import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
 
 /**
+ * Transcribe audio file to text using OpenAI Whisper API
+ */
+async function transcribeAudio(audioUrl: string): Promise<string | null> {
+  try {
+    const openaiApiKey = process.env.OPENAI_API_KEY;
+    
+    if (!openaiApiKey) {
+      console.warn("[BlooWebhook] ⚠️ OPENAI_API_KEY not configured, cannot transcribe audio");
+      return null;
+    }
+
+    console.log("[BlooWebhook] 🎤 Transcribing audio from:", audioUrl);
+
+    // Download audio file
+    const audioResponse = await fetch(audioUrl);
+    if (!audioResponse.ok) {
+      console.error("[BlooWebhook] Failed to download audio:", audioResponse.status);
+      return null;
+    }
+
+    const audioBuffer = await audioResponse.arrayBuffer();
+    const audioBlob = new Blob([audioBuffer], { type: "audio/mpeg" });
+
+    // Create FormData for Whisper API
+    const formData = new FormData();
+    formData.append("file", audioBlob, "voice.mp3");
+    formData.append("model", "whisper-1");
+    formData.append("language", "en");
+
+    // Call OpenAI Whisper API
+    const transcriptionResponse = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${openaiApiKey}`,
+      },
+      body: formData,
+    });
+
+    if (!transcriptionResponse.ok) {
+      const error = await transcriptionResponse.text();
+      console.error("[BlooWebhook] Whisper API error:", error);
+      return null;
+    }
+
+    const result = await transcriptionResponse.json();
+    const transcribedText = result.text || result.transcript;
+
+    console.log("[BlooWebhook] ✅ Transcribed audio:", transcribedText);
+    return transcribedText;
+  } catch (error) {
+    console.error("[BlooWebhook] Exception during audio transcription:", error);
+    return null;
+  }
+}
+
+/**
  * Send response message back to user via Bloo API
  */
 async function sendBlooReply(
@@ -170,6 +226,31 @@ function extractText(payload: BlooWebhookPayload): string | null {
 
   const sanitized = sanitizeText(raw);
   return sanitized.length ? sanitized : null;
+}
+
+/**
+ * Extract audio attachment URL from Bloo payload (for voice messages)
+ */
+function extractAudioUrl(payload: BlooWebhookPayload): string | null {
+  const attachments = (payload as any).attachments;
+  
+  if (!Array.isArray(attachments) || attachments.length === 0) {
+    return null;
+  }
+
+  // Look for audio attachments
+  for (const attachment of attachments) {
+    if (typeof attachment === "object" && attachment.url) {
+      const url = attachment.url as string;
+      // Check if it's an audio file (mp3, m4a, wav, ogg, etc.)
+      if (/\.(mp3|m4a|wav|ogg|webm|flac)$/i.test(url)) {
+        console.log("[BlooWebhook] 🎤 Found audio attachment:", url);
+        return url;
+      }
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -481,9 +562,24 @@ export async function POST(req: NextRequest) {
     console.log("[BlooWebhook] Extracted text:", rawText);
     console.log("[BlooWebhook] Extracted sender:", rawSender);
 
-    // Early return if no content or sender
+    // Try to transcribe audio if no text but has attachments
+    let finalText = rawText;
     if (!rawText) {
-      console.log("[BlooWebhook] No message text, returning 200");
+      const audioUrl = extractAudioUrl(payload);
+      if (audioUrl) {
+        console.log("[BlooWebhook] No text found, attempting audio transcription...");
+        finalText = await transcribeAudio(audioUrl);
+        if (finalText) {
+          console.log("[BlooWebhook] Successfully transcribed audio to:", finalText);
+        } else {
+          console.warn("[BlooWebhook] Audio transcription failed or API not configured");
+        }
+      }
+    }
+
+    // Early return if no content or sender
+    if (!finalText) {
+      console.log("[BlooWebhook] No message text or audio, returning 200");
       return NextResponse.json(
         { message: "No message content provided" },
         { status: 200 }
@@ -561,7 +657,7 @@ export async function POST(req: NextRequest) {
 
     // Analyze message with Gemini AI
     console.log("[BlooWebhook] Analyzing message with AI...");
-    const aiAnalysis = await analyzeWithGemini(rawText);
+    const aiAnalysis = await analyzeWithGemini(finalText);
 
     if (!aiAnalysis.type) {
       console.log("[BlooWebhook] AI analysis did not identify actionable intent");
@@ -652,7 +748,7 @@ export async function POST(req: NextRequest) {
           progress: 0,
           metadata: {
             source: "bloo_webhook",
-            originalMessage: rawText.slice(0, 500),
+            originalMessage: finalText.slice(0, 500),
           },
         });
 
@@ -684,7 +780,7 @@ export async function POST(req: NextRequest) {
         const { error: goalError } = await admin.from("goals").insert({
           user_id: userId,
           title: aiAnalysis.title.slice(0, 200),
-          description: `From Bloo webhook: ${rawText.slice(0, 300)}`,
+          description: `From Bloo webhook: ${finalText.slice(0, 300)}`,
           category: "personal",
           priority: "medium",
           progress: 0,
@@ -731,7 +827,7 @@ export async function POST(req: NextRequest) {
           .insert({
             user_id: userId,
             title: aiAnalysis.title.slice(0, 200),
-            description: `From Bloo webhook: ${rawText.slice(0, 300)}`,
+            description: `From Bloo webhook: ${finalText.slice(0, 300)}`,
             event_date: aiAnalysis.date,
             start_time: aiAnalysis.time || null,
             end_time: null,
