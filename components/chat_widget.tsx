@@ -1980,7 +1980,7 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
     console.log('[ChatWidget] send() called', { messageText, input, inputLength: input?.length });
     
     const hasFiles = attachedFiles.length > 0;
-    
+
     console.log('[ChatWidget] send() processed - TEXT:', text, 'LENGTH:', text.length, 'HAS_FILES:', hasFiles);
     
     // Need either text or files
