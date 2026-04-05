@@ -1966,6 +1966,14 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
   };
 
   async function send(messageText?: string) {
+
+    //Input validation fix
+    const text = String(actualMessage || input || "").trim();
+    if(text.length < 3 || !/[a-zA-Z0-9]/.test(text)){
+      toast.error("Please enter a valid message");
+      return;
+    }
+    
     console.log('[ChatWidget] send() called', { messageText, input, inputLength: input?.length });
     
     // If messageText is an event object, ignore it
