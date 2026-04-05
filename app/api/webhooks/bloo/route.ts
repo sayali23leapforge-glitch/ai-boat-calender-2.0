@@ -13,70 +13,46 @@ async function sendBlooReply(
 ): Promise<boolean> {
   try {
     const blooApiKey = process.env.BLOO_API_KEY;
-    const blooOrgId = process.env.BLOO_ORG_ID;
-    const blooBaseUrl = process.env.BLOO_BASE_URL || "https://api.blooio.com";
 
     console.log("[BlooWebhook] ========== ATTEMPTING BLOO REPLY ==========");
     console.log("[BlooWebhook] Recipient:", recipientPhone);
     console.log("[BlooWebhook] Message:", message);
     console.log("[BlooWebhook] Has API Key:", !!blooApiKey);
-    console.log("[BlooWebhook] Has Org ID:", !!blooOrgId);
-    console.log("[BlooWebhook] Base URL:", blooBaseUrl);
 
     if (!blooApiKey) {
       console.error("[BlooWebhook] ❌ BLOO_API_KEY not configured!");
       return false;
     }
 
-    if (!blooOrgId) {
-      console.error("[BlooWebhook] ❌ BLOO_ORG_ID not configured!");
+    // Normalize phone for Bloo API
+    const normalizedPhone = recipientPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
+    
+    // Use Bloo v2 endpoint with phone number (NO organization ID needed!)
+    const endpoint = `https://backend.blooio.com/v2/api/chats/${normalizedPhone}/messages`;
+    console.log("[BlooWebhook] Endpoint:", endpoint);
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${blooApiKey}`,
+      },
+      body: JSON.stringify({
+        text: message,
+      }),
+    });
+
+    console.log("[BlooWebhook] Response status:", response.status);
+    const responseText = await response.text();
+    console.log("[BlooWebhook] Response body:", responseText);
+
+    if (response.ok) {
+      console.log("[BlooWebhook] ✅ Bloo reply sent successfully!");
+      return true;
+    } else {
+      console.error("[BlooWebhook] ❌ Bloo API error:", responseText);
       return false;
     }
-
-    // Try Bloo REST API with multiple endpoint possibilities
-    const endpoints = [
-      `${blooBaseUrl}/v1/messages`,
-      `${blooBaseUrl}/messages/send`,
-      `${blooBaseUrl}/api/messages/send`,
-    ];
-
-    for (const endpoint of endpoints) {
-      try {
-        console.log(`[BlooWebhook] Trying endpoint: ${endpoint}`);
-
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${blooApiKey}`,
-            "X-Organization-ID": blooOrgId,
-            "X-Org-ID": blooOrgId,
-          },
-          body: JSON.stringify({
-            to: recipientPhone,
-            text: message,
-            body: message,
-            message: message,
-            recipient: recipientPhone,
-            phoneNumber: recipientPhone,
-          }),
-        });
-
-        console.log(`[BlooWebhook] Response status from ${endpoint}:`, response.status);
-        const responseText = await response.text();
-        console.log(`[BlooWebhook] Response body:`, responseText);
-
-        if (response.ok) {
-          console.log("[BlooWebhook] ✅ Bloo reply sent successfully!");
-          return true;
-        }
-      } catch (endpointError) {
-        console.warn(`[BlooWebhook] Endpoint ${endpoint} failed:`, endpointError);
-      }
-    }
-
-    console.error("[BlooWebhook] ❌ All Bloo API endpoints failed");
-    return false;
   } catch (error) {
     console.error("[BlooWebhook] Exception sending Bloo reply:", error);
     return false;
