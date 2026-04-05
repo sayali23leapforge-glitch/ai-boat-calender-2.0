@@ -1969,8 +1969,8 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
     //Input validation fix
     const text = String(actualMessage || input || "").trim();
-    if(text.length < 3 || !/[a-zA-Z0-9]/.test(text)){
-      toast.error("Please enter a valid message");
+    if(!text || text.length < 3 || !/[a-zA-Z]/.test(text)){
+      toast.error("Please enter a valid task");
       return;
     }
     
