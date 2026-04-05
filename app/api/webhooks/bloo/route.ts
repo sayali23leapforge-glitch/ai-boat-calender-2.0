@@ -249,8 +249,8 @@ function parseMessageIntent(text: string): AIAnalysisResult {
 
   const cleaned = lower;
 
-  // Detect specific time patterns (2:30 pm, etc.)
-  const specificTimeMatch = cleaned.match(/(\d{1,2}):(\d{2})\s*(am|pm|a\.m|p\.m)?/i);
+  // Detect specific time patterns (2:30 pm, 1 pm, 2:30, 1pm, etc.)
+  const specificTimeMatch = cleaned.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m|p\.m)?/i);
   
   // Detect time of day keywords
   const timeOfDayMatch = cleaned.match(/\b(morning|afternoon|evening|tonight|night|noon|midnight)\b/i);
@@ -264,8 +264,8 @@ function parseMessageIntent(text: string): AIAnalysisResult {
   const goalKeywords = /\b(learn|study|master|improve|practice|get better|become|achieve|complete|finish|accomplish)\b/i;
   const isGoal = goalKeywords.test(cleaned);
 
-  // **NEW: Detect EVENT keywords** (recital, concert, meeting, etc.)
-  const eventKeywords = /\b(meeting|event|recital|concert|performance|appointment|presentation|show|rehearsal|practice|session|class|lecture|seminar|conference|summit|interview|date|call|zoom|webinar|demo|review)\b/i;
+  // **NEW: Detect EVENT keywords** (schedule, meeting, recital, concert, etc.)
+  const eventKeywords = /\b(schedule|meeting|event|recital|concert|performance|appointment|presentation|show|rehearsal|practice|session|class|lecture|seminar|conference|summit|interview|date|call|zoom|webinar|demo|review)\b/i;
   const isEvent = eventKeywords.test(cleaned);
 
   // **IMPROVED Determine type**
@@ -318,7 +318,7 @@ function parseMessageIntent(text: string): AIAnalysisResult {
   let time: string | null = null;
   
   if (specificTimeMatch) {
-    // Specific time like "2:30 pm"
+    // Specific time like "2:30 pm" or "1 pm"
     let hour = parseInt(specificTimeMatch[1]);
     const min = parseInt(specificTimeMatch[2]) || 0;
     const meridiem = specificTimeMatch[3]?.toLowerCase();
@@ -352,11 +352,12 @@ function parseMessageIntent(text: string): AIAnalysisResult {
 
   // **IMPROVED Extract title** - preserve original text, just remove time/date markers
   let title = cleaned
-    // Remove time keywords
+    // Remove prepositions before time keywords
     .replace(/\b(at|on|in|for)\s+(morning|afternoon|evening|night|tonight|noon|midnight)\b/gi, "")
+    // Remove time keywords
     .replace(/\b(morning|afternoon|evening|tonight|night|noon|midnight|am|pm|a\.m|p\.m|o'clock)\b/gi, "")
-    // Remove specific times like "2:30"
-    .replace(/\d{1,2}:(\d{2})?\s*(am|pm|a\.m|p\.m)?/gi, "")
+    // Remove specific times like "2:30 pm" or "1 pm"
+    .replace(/\b\d{1,2}(?::\d{2})?\s*(am|pm|a\.m|p\.m)?\b/gi, "")
     // Remove date keywords
     .replace(/\b(on|at|in|next|this|the|a|an|for)\b/gi, "")
     .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|tonight|this week|this month)\b/gi, "")
@@ -397,14 +398,16 @@ function parseMessageIntent(text: string): AIAnalysisResult {
 function correctSpellingLocally(text: string): string {
   // Apply only safe, intentional typo fixes
   let corrected = text
-    .replace(/\btommrow\b/gi, "tomorrow")
-    .replace(/\btmrw\b/gi, "tomorrow")
-    .replace(/\btmrow\b/gi, "tomorrow")
+    // Tomorrow variations (tommrow, tommorow, tmrw, tmrow, etc.)
+    .replace(/\b(tommorow|tommrow|tmrow|tmrw|tomorow)\b/gi, "tomorrow")
+    // Common word typos
     .replace(/\bshedule\b/gi, "schedule")
     .replace(/\bmeating\b/gi, "meeting")
     .replace(/\bmeeting\b/gi, "meeting")
     .replace(/\brecital\b/gi, "recital")
-    .replace(/\brecitle\b/gi, "recital");
+    .replace(/\brecitle\b/gi, "recital")
+    .replace(/\bappointmemt\b/gi, "appointment")
+    .replace(/\bappointment\b/gi, "appointment");
 
   if (corrected !== text) {
     console.log(`[BlooWebhook] Local spell fix: "${text}" → "${corrected}"`);
