@@ -1967,8 +1967,11 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
 
   async function send(messageText?: string) {
 
-    //Input validation fix
+    // If messageText is an event object, ignore it
+    const actualMessage = (typeof messageText === 'string') ? messageText : undefined;
     const text = String(actualMessage || input || "").trim();
+    
+    //Input validation fix
     if(!text || text.length < 3 || !/[a-zA-Z]/.test(text)){
       toast.error("Please enter a valid task");
       return;
@@ -1976,9 +1979,6 @@ export default function ChatWidget({ onSetActiveView, userId, onFileUploaded }: 
     
     console.log('[ChatWidget] send() called', { messageText, input, inputLength: input?.length });
     
-    // If messageText is an event object, ignore it
-    const actualMessage = (typeof messageText === 'string') ? messageText : undefined;
-    const text = String(actualMessage || input || "").trim();
     const hasFiles = attachedFiles.length > 0;
     
     console.log('[ChatWidget] send() processed - TEXT:', text, 'LENGTH:', text.length, 'HAS_FILES:', hasFiles);
