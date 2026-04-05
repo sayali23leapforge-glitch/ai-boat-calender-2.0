@@ -5,7 +5,7 @@ import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
 
 /**
- * Send response message back to user via Bloo
+ * Send response message back to user via Bloo API
  */
 async function sendBlooReply(
   recipientPhone: string,
@@ -14,36 +14,69 @@ async function sendBlooReply(
   try {
     const blooApiKey = process.env.BLOO_API_KEY;
     const blooOrgId = process.env.BLOO_ORG_ID;
+    const blooBaseUrl = process.env.BLOO_BASE_URL || "https://api.blooio.com";
 
-    if (!blooApiKey || !blooOrgId) {
-      console.log("[BlooWebhook] Bloo API credentials not configured, skipping reply");
+    console.log("[BlooWebhook] ========== ATTEMPTING BLOO REPLY ==========");
+    console.log("[BlooWebhook] Recipient:", recipientPhone);
+    console.log("[BlooWebhook] Message:", message);
+    console.log("[BlooWebhook] Has API Key:", !!blooApiKey);
+    console.log("[BlooWebhook] Has Org ID:", !!blooOrgId);
+    console.log("[BlooWebhook] Base URL:", blooBaseUrl);
+
+    if (!blooApiKey) {
+      console.error("[BlooWebhook] ❌ BLOO_API_KEY not configured!");
       return false;
     }
 
-    console.log(`[BlooWebhook] Sending Bloo reply to ${recipientPhone}: ${message}`);
-
-    const response = await fetch("https://api.blooio.com/messages/send", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${blooApiKey}`,
-        "X-Org-ID": blooOrgId,
-      },
-      body: JSON.stringify({
-        to: recipientPhone,
-        text: message,
-        format: "text",
-      }),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      console.error("[BlooWebhook] Failed to send Bloo reply:", error);
+    if (!blooOrgId) {
+      console.error("[BlooWebhook] ❌ BLOO_ORG_ID not configured!");
       return false;
     }
 
-    console.log("[BlooWebhook] ✓ Bloo reply sent successfully");
-    return true;
+    // Try Bloo REST API with multiple endpoint possibilities
+    const endpoints = [
+      `${blooBaseUrl}/v1/messages`,
+      `${blooBaseUrl}/messages/send`,
+      `${blooBaseUrl}/api/messages/send`,
+    ];
+
+    for (const endpoint of endpoints) {
+      try {
+        console.log(`[BlooWebhook] Trying endpoint: ${endpoint}`);
+
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${blooApiKey}`,
+            "X-Organization-ID": blooOrgId,
+            "X-Org-ID": blooOrgId,
+          },
+          body: JSON.stringify({
+            to: recipientPhone,
+            text: message,
+            body: message,
+            message: message,
+            recipient: recipientPhone,
+            phoneNumber: recipientPhone,
+          }),
+        });
+
+        console.log(`[BlooWebhook] Response status from ${endpoint}:`, response.status);
+        const responseText = await response.text();
+        console.log(`[BlooWebhook] Response body:`, responseText);
+
+        if (response.ok) {
+          console.log("[BlooWebhook] ✅ Bloo reply sent successfully!");
+          return true;
+        }
+      } catch (endpointError) {
+        console.warn(`[BlooWebhook] Endpoint ${endpoint} failed:`, endpointError);
+      }
+    }
+
+    console.error("[BlooWebhook] ❌ All Bloo API endpoints failed");
+    return false;
   } catch (error) {
     console.error("[BlooWebhook] Exception sending Bloo reply:", error);
     return false;
@@ -520,6 +553,7 @@ export async function POST(req: NextRequest) {
       .from("user_profiles")
       .select("user_id, phone")
       .eq("phone", normalizedPhone)
+      .limit(1)
       .maybeSingle();
 
     if (profileError) {
