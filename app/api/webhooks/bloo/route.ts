@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 
 /**
  * Transcribe audio file to text using Gemini API
- * Simple direct approach - no complex fallbacks
+ * Simple direct approach - uses gemini-pro which is universally available
  */
 async function transcribeAudio(audioUrl: string): Promise<string | null> {
   try {
@@ -35,10 +35,11 @@ async function transcribeAudio(audioUrl: string): Promise<string | null> {
     else if (audioUrl.includes(".ogg")) mimeType = "audio/ogg";
     else if (audioUrl.includes(".webm")) mimeType = "audio/webm";
 
-    // Direct API call to Gemini 1.5 Flash (simpler, more reliable)
-    console.log("[BlooWebhook] Calling Gemini API...");
+    // Use Gemini Pro model (universally available)
+    // Gemini Pro can handle both text and audio
+    console.log("[BlooWebhook] Calling Gemini Pro API...");
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -46,7 +47,7 @@ async function transcribeAudio(audioUrl: string): Promise<string | null> {
           contents: [{
             parts: [
               {
-                text: "Listen to this audio message and transcribe what you hear. Reply with ONLY the transcribed text, no explanations."
+                text: "You are an audio transcription service. Listen carefully to this audio and transcribe every word you hear. Respond with ONLY the transcribed text, nothing else. Do not add explanations, punctuation, or commentary."
               },
               {
                 inline_data: {
@@ -60,11 +61,11 @@ async function transcribeAudio(audioUrl: string): Promise<string | null> {
       }
     );
 
-    console.log("[BlooWebhook] API response status:", response.status);
+    console.log("[BlooWebhook] Gemini API response status:", response.status);
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("[BlooWebhook] Transcription API error:", response.status, errorText);
+      console.error("[BlooWebhook] Gemini API error:", response.status, errorText);
       return null;
     }
 
@@ -72,15 +73,15 @@ async function transcribeAudio(audioUrl: string): Promise<string | null> {
     const transcribedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (transcribedText && transcribedText.trim()) {
-      console.log("[BlooWebhook] ✅ Audio transcribed successfully:", transcribedText.trim());
+      console.log("[BlooWebhook] ✅ Audio transcribed:", transcribedText.trim());
       return transcribedText.trim();
     }
 
-    console.warn("[BlooWebhook] No text extracted from API response");
+    console.warn("[BlooWebhook] No text in API response");
     return null;
 
   } catch (error) {
-    console.error("[BlooWebhook] Transcription exception:", error);
+    console.error("[BlooWebhook] Transcription error:", error);
     return null;
   }
 }
