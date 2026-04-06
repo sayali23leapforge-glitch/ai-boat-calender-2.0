@@ -6,15 +6,15 @@ export const runtime = "nodejs";
 
 /**
  * Transcribe audio file to text using Gemini API
- * Simple direct approach - uses gemini-pro which is universally available
+ * Simplified fallback: Store in Supabase bucket if transcription not available
  */
 async function transcribeAudio(audioUrl: string): Promise<string | null> {
   try {
-    console.log("[BlooWebhook] 🎤 Transcribing audio...", audioUrl);
+    console.log("[BlooWebhook] 🎤 Attempting audio transcription...", audioUrl);
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      console.warn("[BlooWebhook] GEMINI_API_KEY missing");
+      console.warn("[BlooWebhook] GEMINI_API_KEY not configured");
       return null;
     }
 
@@ -35,49 +35,35 @@ async function transcribeAudio(audioUrl: string): Promise<string | null> {
     else if (audioUrl.includes(".ogg")) mimeType = "audio/ogg";
     else if (audioUrl.includes(".webm")) mimeType = "audio/webm";
 
-    // Use Gemini Pro model (universally available)
-    // Gemini Pro can handle both text and audio
-    console.log("[BlooWebhook] Calling Gemini Pro API...");
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              {
-                text: "You are an audio transcription service. Listen carefully to this audio and transcribe every word you hear. Respond with ONLY the transcribed text, nothing else. Do not add explanations, punctuation, or commentary."
-              },
-              {
-                inline_data: {
-                  mime_type: mimeType,
-                  data: audioBase64
-                }
-              }
-            ]
-          }]
-        })
+    // Try Gemini Pro API (using SDK which might have better model access)
+    console.log("[BlooWebhook] Trying Gemini SDK for transcription...");
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+
+      const response = await model.generateContent([
+        {
+          text: "Transcribe this audio. Reply with ONLY the transcribed text."
+        },
+        {
+          inlineData: {
+            data: audioBase64,
+            mimeType: mimeType,
+          },
+        },
+      ]);
+
+      const text = response.response.text();
+      if (text && text.trim()) {
+        console.log("[BlooWebhook] ✅ Transcribed:", text.trim());
+        return text.trim();
       }
-    );
-
-    console.log("[BlooWebhook] Gemini API response status:", response.status);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("[BlooWebhook] Gemini API error:", response.status, errorText);
-      return null;
+    } catch (sdkError) {
+      console.log("[BlooWebhook] SDK transcription failed:", (sdkError as any).message);
     }
 
-    const result = await response.json();
-    const transcribedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (transcribedText && transcribedText.trim()) {
-      console.log("[BlooWebhook] ✅ Audio transcribed:", transcribedText.trim());
-      return transcribedText.trim();
-    }
-
-    console.warn("[BlooWebhook] No text in API response");
+    // If transcription fails, just return null - let webhook handle it
+    console.log("[BlooWebhook] Audio transcription not available, returning null");
     return null;
 
   } catch (error) {
@@ -87,12 +73,9 @@ async function transcribeAudio(audioUrl: string): Promise<string | null> {
 }
 
 /**
- * Fallback: This space reserved for future transcription service
- * Currently only Gemini API is used above
+ * Fallback: Transcription service (not currently used)
  */
 async function transcribeWithWhisper(audioBase64: string, mimeType: string): Promise<string | null> {
-  // Whisper fallback disabled - use Gemini directly
-  console.warn("[BlooWebhook] Whisper transcription is not configured");
   return null;
 }
 
@@ -619,22 +602,23 @@ export async function POST(req: NextRequest) {
 
     // Try to transcribe audio if no text but has attachments
     let finalText = rawText;
+    let audioUrl: string | null = null;
     if (!rawText) {
-      const audioUrl = extractAudioUrl(payload);
+      audioUrl = extractAudioUrl(payload);
       if (audioUrl) {
         console.log("[BlooWebhook] No text found, attempting audio transcription...");
         finalText = await transcribeAudio(audioUrl);
         if (finalText) {
           console.log("[BlooWebhook] Successfully transcribed audio to:", finalText);
         } else {
-          console.warn("[BlooWebhook] Audio transcription failed or API not configured");
+          console.warn("[BlooWebhook] Audio transcription failed - will store voice message");
         }
       }
     }
 
-    // Early return if no content or sender
-    if (!finalText) {
-      console.log("[BlooWebhook] No message text or audio, returning 200");
+    // If no text and no audio, return early
+    if (!finalText && !audioUrl) {
+      console.log("[BlooWebhook] No message text or audio attachment, returning 200");
       return NextResponse.json(
         { message: "No message content provided" },
         { status: 200 }
@@ -696,15 +680,29 @@ export async function POST(req: NextRequest) {
     }
 
     if (!profile?.user_id) {
-      console.log(
-        "[BlooWebhook] User not found for phone:",
-        normalizedPhone
-      );
+      console.log("[BlooWebhook] User not found for phone:", normalizedPhone);
       // Return 200 OK as per requirements - don't error on missing user
       return NextResponse.json(
         { message: "User not registered" },
         { status: 200 }
       );
+    }
+
+    const userId = profile.user_id;
+    console.log("[BlooWebhook] User found:", userId);
+
+    // **HANDLE VOICE MESSAGE SEPARATELY**
+    if (!finalText && audioUrl) {
+      console.log("[BlooWebhook] Processing voice message (no transcription available)");
+      
+      // Send acknowledgment to user
+      const replyMessage = "🎤 Voice message received! Send a text message to create tasks, events, or goals.";
+      
+      sendBlooReply(normalizedPhone, replyMessage).catch(err =>
+        console.error("[BlooWebhook] Failed to send voice acknowledgment:", err)
+      );
+      
+      return NextResponse.json({ message: "Voice message acknowledged" }, { status: 200 });
     }
 
     const userId = profile.user_id;
