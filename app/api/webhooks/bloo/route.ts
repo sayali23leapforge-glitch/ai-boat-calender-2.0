@@ -366,26 +366,29 @@ function parseMessageIntent(text: string): AIAnalysisResult {
 
   const cleaned = lower;
 
-  // Detect specific time patterns (2:30 pm, 1 pm, 2:30, 1pm, etc.)
-  const specificTimeMatch = cleaned.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m|p\.m)?/i);
+  // **IMPROVED: Detect specific time patterns - MUST have am/pm or colon**
+  // Matches: "2:30 pm", "1 pm", "10am", "2:30", BUT NOT bare "7" or "10"
+  const specificTimeMatch = cleaned.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m|p\.m)/i);
   
   // Detect time of day keywords
   const timeOfDayMatch = cleaned.match(/\b(morning|afternoon|evening|tonight|night|noon|midnight)\b/i);
   const hasTime = specificTimeMatch || timeOfDayMatch;
   
-  // Detect date patterns
-  const dateKeywords = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|next|today|tonight|this week|this month)\b/i;
-  const hasDate = dateKeywords.test(cleaned);
+  // **IMPROVED: Detect date patterns - includes "DD Month" or "Month DD" format**
+  // Matches: "7 april", "april 7", "tomorrow", "monday", etc.
+  const datePatterns = /\b(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december)|(\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|next|today|tonight|this week|this month)\b)/i;
+  const dateMatch = datePatterns.test(cleaned);
+  const hasDate = dateMatch;
 
   // Detect goal/learning keywords
   const goalKeywords = /\b(learn|study|master|improve|practice|get better|become|achieve|complete|finish|accomplish)\b/i;
   const isGoal = goalKeywords.test(cleaned);
 
-  // **NEW: Detect EVENT keywords** (schedule, meeting, recital, concert, etc.)
+  // **EVENT keywords**
   const eventKeywords = /\b(schedule|meeting|event|recital|concert|performance|appointment|presentation|show|rehearsal|practice|session|class|lecture|seminar|conference|summit|interview|date|call|zoom|webinar|demo|review)\b/i;
   const isEvent = eventKeywords.test(cleaned);
 
-  // **IMPROVED Determine type**
+  // **Determine type**
   let type: "task" | "goal" | "event" = "task";
   
   // Priority: If has EVENT keyword + date/time → EVENT
@@ -409,29 +412,53 @@ function parseMessageIntent(text: string): AIAnalysisResult {
     console.log(`[BlooWebhook] Type: TASK (default)`);
   }
 
-  // **IMPROVED Extract date** (TODAY = 2026-04-03, TOMORROW = 2026-04-04)
+  // **Parse specific date: "7 April" or "April 7" format (2026 reference)**
   let date: string | null = null;
-  if (cleaned.includes("friday")) {
-    date = "2026-04-04";
-  } else if (cleaned.includes("saturday")) {
-    date = "2026-04-05";
-  } else if (cleaned.includes("sunday")) {
-    date = "2026-04-06";
-  } else if (cleaned.includes("monday")) {
-    date = "2026-04-07";
-  } else if (cleaned.includes("tuesday")) {
-    date = "2026-04-08";
-  } else if (cleaned.includes("wednesday")) {
-    date = "2026-04-09";
-  } else if (cleaned.includes("thursday")) {
-    date = "2026-04-10";
-  } else if (cleaned.includes("tomorrow")) {
-    date = "2026-04-04";
-  } else if (cleaned.includes("today")) {
-    date = "2026-04-03";
+  const monthMap: { [key: string]: number } = {
+    january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+    july: 7, august: 8, september: 9, october: 10, november: 11, december: 12
+  };
+
+  // Try to match "DD Month" format (e.g., "7 april")
+  const dayMonthMatch = cleaned.match(/\b(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b/i);
+  if (dayMonthMatch) {
+    const day = dayMonthMatch[1];
+    const month = monthMap[dayMonthMatch[2].toLowerCase()];
+    if (month) {
+      date = `2026-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      console.log(`[BlooWebhook] Parsed date from "DD Month": ${date}`);
+    }
   }
 
-  // **IMPROVED Extract time**
+  // Try to match "Month DD" format (e.g., "april 7")
+  if (!date) {
+    const monthDayMatch = cleaned.match(/(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})\b/i);
+    if (monthDayMatch) {
+      const month = monthMap[monthDayMatch[1].toLowerCase()];
+      const day = monthDayMatch[2];
+      if (month) {
+        date = `2026-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+        console.log(`[BlooWebhook] Parsed date from "Month DD": ${date}`);
+      }
+    }
+  }
+
+  // Fallback to day names (Monday, Tuesday, etc.)
+  if (!date) {
+    if (cleaned.includes("monday")) date = "2026-04-07";
+    else if (cleaned.includes("tuesday")) date = "2026-04-08";
+    else if (cleaned.includes("wednesday")) date = "2026-04-09";
+    else if (cleaned.includes("thursday")) date = "2026-04-10";
+    else if (cleaned.includes("friday")) date = "2026-04-11";
+    else if (cleaned.includes("saturday")) date = "2026-04-12";
+    else if (cleaned.includes("sunday")) date = "2026-04-13";
+    else if (cleaned.includes("tomorrow")) date = "2026-04-07"; // Current date is 2026-04-06
+    else if (cleaned.includes("today")) date = "2026-04-06";
+    
+    if (date) console.log(`[BlooWebhook] Parsed date from day name: ${date}`);
+  }
+
+  // **Parse time: "2:30 pm" or "morning" format**
   let time: string | null = null;
   
   if (specificTimeMatch) {
@@ -451,38 +478,32 @@ function parseMessageIntent(text: string): AIAnalysisResult {
   } else if (timeOfDayMatch) {
     // Time of day like "morning", "afternoon", etc.
     const timeWord = timeOfDayMatch[1].toLowerCase();
-    if (timeWord === "morning") {
-      time = "09:00";
-    } else if (timeWord === "afternoon") {
-      time = "14:00";
-    } else if (timeWord === "evening") {
-      time = "18:00";
-    } else if (timeWord === "night" || timeWord === "tonight") {
-      time = "20:00";
-    } else if (timeWord === "noon") {
-      time = "12:00";
-    } else if (timeWord === "midnight") {
-      time = "00:00";
-    }
+    if (timeWord === "morning") time = "09:00";
+    else if (timeWord === "afternoon") time = "14:00";
+    else if (timeWord === "evening") time = "18:00";
+    else if (timeWord === "night" || timeWord === "tonight") time = "20:00";
+    else if (timeWord === "noon") time = "12:00";
+    else if (timeWord === "midnight") time = "00:00";
+    
     console.log(`[BlooWebhook] Parsed time of day "${timeWord}" as ${time}`);
   }
 
-  // **IMPROVED Extract title** - preserve original text, just remove time/date markers
+  // **Extract title: remove time/date refs but keep event name**
   let title = cleaned
-    // Remove prepositions before time keywords
-    .replace(/\b(at|on|in|for)\s+(morning|afternoon|evening|night|tonight|noon|midnight)\b/gi, "")
-    // Remove time keywords
-    .replace(/\b(morning|afternoon|evening|tonight|night|noon|midnight|am|pm|a\.m|p\.m|o'clock)\b/gi, "")
-    // Remove specific times like "2:30 pm" or "1 pm"
-    .replace(/\b\d{1,2}(?::\d{2})?\s*(am|pm|a\.m|p\.m)?\b/gi, "")
-    // Remove date keywords
-    .replace(/\b(on|at|in|next|this|the|a|an|for)\b/gi, "")
-    .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|tonight|this week|this month)\b/gi, "")
+    // Remove "on DATE" or "at TIME" patterns
+    .replace(/\b(on|at)\s+\d{1,2}\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b/gi, "")
+    .replace(/\b(on|at|in)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|tonight)\b/gi, "")
+    // Remove specific times "2:30 pm" or "10 am"
+    .replace(/\b\d{1,2}(?::\d{2})?\s*(am|pm|a\.m|p\.m)\b/gi, "")
+    // Remove time of day keywords
+    .replace(/\b(morning|afternoon|evening|tonight|night|noon|midnight)\b/gi, "")
+    // Remove extra prepositions
+    .replace(/\b(at|on|in|for|the|a|an)\s+/gi, "")
     // Clean up extra whitespace
     .replace(/\s+/g, " ")
     .trim();
 
-  // If title is empty or too short, use original text
+  // If title is empty, use original text
   if (!title || title.length < 2) {
     title = text;
     console.log(`[BlooWebhook] Title was empty, using original: "${title}"`);
@@ -490,8 +511,6 @@ function parseMessageIntent(text: string): AIAnalysisResult {
 
   // Capitalize first letter
   title = title.charAt(0).toUpperCase() + title.slice(1);
-
-  // Ensure max length
   title = title.slice(0, 200);
 
   console.log(`[BlooWebhook] Final parse result:`, {
