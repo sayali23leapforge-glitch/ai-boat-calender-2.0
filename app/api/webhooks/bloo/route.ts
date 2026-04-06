@@ -503,6 +503,93 @@ function parseMessageIntent(text: string): AIAnalysisResult {
 }
 
 /**
+ * Detect if a message is casual chat vs action-based (task/event/goal creation)
+ */
+function isCasualMessage(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  
+  // Casual greeting keywords
+  const casualKeywords = [
+    "hi", "hey", "hello", "greetings",
+    "how are you", "how's it", "how you doing", "whats up", "what's up",
+    "sup", "yo", "hola", "namaste",
+    "good morning", "good afternoon", "good evening", "good night",
+    "thanks", "thank you", "thank you so much", "appreciate",
+    "lol", "haha", "lmao", "rofl", "hehe",
+    "yeah", "yep", "yes", "nope", "no", "ok", "okay", "ok cool",
+    "love it", "nice", "cool", "awesome", "great", "awesome sauce",
+    "omg", "omg yes", "omg no", "wow", "wait", "what",
+    "when", "where", "who", "how",
+    "right", "exactly", "true", "totally", "absolutely",
+  ];
+
+  // Check if message is very short and contains casual keywords
+  if (lower.length < 50) {
+    for (const keyword of casualKeywords) {
+      if (lower === keyword || lower.startsWith(keyword + " ") || lower.endsWith(" " + keyword)) {
+        console.log(`[BlooWebhook] Detected casual message: "${text}" (keyword: "${keyword}")`);
+        return true;
+      }
+    }
+  }
+
+  // Check if it's just casual conversation without action keywords
+  const actionKeywords = [
+    "create", "make", "add", "schedule", "book", "remind", "remember", "set", "buy",
+    "call", "email", "message", "do", "need to", "gotta", "should", "must",
+    "learn", "study", "practice", "finish", "complete", "start", "begin",
+  ];
+  
+  const hasActionKeyword = actionKeywords.some(kw => lower.includes(kw));
+  
+  // If it's very short and no action keyword, it's likely casual
+  if (lower.length < 30 && !hasActionKeyword) {
+    console.log(`[BlooWebhook] Detected casual short message: "${text}"`);
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Generate a casual reply using Gemini API
+ */
+async function generateCasualReply(userMessage: string): Promise<string> {
+  try {
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
+      console.warn("[BlooWebhook] GEMINI_API_KEY not configured for casual reply");
+      return "Hey! 👋";
+    }
+
+    const genAI = new GoogleGenerativeAI(geminiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+    const prompt = `You are a friendly casual chat assistant. The user just sent you this message: "${userMessage}"
+
+Generate a short, casual, friendly reply (1-2 sentences max). Keep it natural and conversational.
+Examples:
+- User: "hi" → You: "Hey! What's on your mind?"
+- User: "how are you" → You: "Doing great! How about you?"
+- User: "thanks" → You: "You got it! Anytime 😊"
+- User: "cool" → You: "Right? Pretty awesome!"
+
+Now reply to this message with just the reply text, nothing else.`;
+
+    const result = await model.generateContent(prompt);
+    const response = result.response;
+    const replyText = response.text().trim();
+
+    console.log(`[BlooWebhook] Generated casual reply: "${replyText}"`);
+    return replyText;
+
+  } catch (error) {
+    console.error("[BlooWebhook] Error generating casual reply:", error);
+    return "Hey! 👋"; // Fallback reply
+  }
+}
+
+/**
  * Fix common typos - DO NOT use Gemini as it hallucinates unrelated content
  * Just apply simple, safe replacements
  */
@@ -704,15 +791,55 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // ========================================================================
+    // CHECK IF MESSAGE IS CASUAL OR ACTION-BASED
+    // ========================================================================
+    const isCasual = isCasualMessage(finalText);
+    
+    if (isCasual) {
+      console.log("[BlooWebhook] Message is casual chat, generating casual reply...");
+      
+      try {
+        const casualReply = await generateCasualReply(finalText);
+        
+        // Send casual reply in background (don't wait)
+        sendBlooReply(normalizedPhone, casualReply).catch(err =>
+          console.error("[BlooWebhook] Failed to send casual reply:", err)
+        );
+        
+        console.log("[BlooWebhook] Casual reply sent, returning 200");
+        return NextResponse.json({ message: "Casual reply sent" }, { status: 200 });
+      } catch (error) {
+        console.error("[BlooWebhook] Error handling casual message:", error);
+        // Fallback: still return success
+        sendBlooReply(normalizedPhone, "Hey! 👋").catch(err =>
+          console.error("[BlooWebhook] Failed to send fallback reply:", err)
+        );
+        return NextResponse.json({ message: "Casual reply sent" }, { status: 200 });
+      }
+    }
+
+    // ========================================================================
+    // MESSAGE IS ACTION-BASED: ANALYZE AND CREATE TASK/EVENT/GOAL
+    // ========================================================================
+    
     // Analyze message with Gemini AI
-    console.log("[BlooWebhook] Analyzing message with AI...");
+    console.log("[BlooWebhook] Analyzing message for action intent...");
     const aiAnalysis = await analyzeWithGemini(finalText);
 
     if (!aiAnalysis.type) {
       console.log("[BlooWebhook] AI analysis did not identify actionable intent");
-      // Return 200 OK - no action to take
+      // Fallback to casual reply for unclear message
+      try {
+        const casualReply = await generateCasualReply(finalText);
+        sendBlooReply(normalizedPhone, casualReply).catch(err =>
+          console.error("[BlooWebhook] Failed to send reply:", err)
+        );
+      } catch (error) {
+        console.error("[BlooWebhook] Error generating fallback reply:", error);
+      }
       return NextResponse.json(
-        { message: "Message acknowledged, no action taken" },
+        { message: "Message acknowledged" },
         { status: 200 }
       );
     }
@@ -809,7 +936,7 @@ export async function POST(req: NextRequest) {
         console.log("[BlooWebhook] Task created successfully");
         
         // Send confirmation message back to user (in background, don't wait)
-        const replyMessage = `✓ Task created: "${aiAnalysis.title}"${aiAnalysis.date ? ` (${aiAnalysis.date})` : ""}`;
+        const replyMessage = `✓ Task created: ${aiAnalysis.title}`;
         sendBlooReply(normalizedPhone, replyMessage).catch(err => 
           console.error("[BlooWebhook] Failed to send reply:", err)
         );
@@ -846,7 +973,7 @@ export async function POST(req: NextRequest) {
         console.log("[BlooWebhook] Goal created successfully");
         
         // Send confirmation message back to user (in background, don't wait)
-        const replyMessage = `🎯 Goal created: "${aiAnalysis.title}"`;
+        const replyMessage = `✓ Goal created: ${aiAnalysis.title}`;
         sendBlooReply(normalizedPhone, replyMessage).catch(err => 
           console.error("[BlooWebhook] Failed to send reply:", err)
         );
@@ -900,7 +1027,7 @@ export async function POST(req: NextRequest) {
         console.log("[BlooWebhook] Event created successfully");
         
         // Send confirmation message back to user (in background, don't wait)
-        const replyMessage = `📅 Event created: "${aiAnalysis.title}"${aiAnalysis.time ? ` at ${aiAnalysis.time}` : ""} on ${aiAnalysis.date}`;
+        const replyMessage = `✓ Event created: ${aiAnalysis.title}`;
         sendBlooReply(normalizedPhone, replyMessage).catch(err => 
           console.error("[BlooWebhook] Failed to send reply:", err)
         );
