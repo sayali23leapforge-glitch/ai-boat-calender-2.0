@@ -5,21 +5,26 @@ import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
 
 /**
- * Transcribe audio file to text using OpenAI Whisper API
- * Simple and reliable approach
+ * Transcribe audio file to text using Gemini API
+ * Gemini can handle audio files via URL directly
  */
 async function transcribeAudio(audioUrl: string): Promise<string | null> {
   try {
-    console.log("[BlooWebhook] 🎤 Transcribing audio with Whisper API...", audioUrl);
+    console.log("[BlooWebhook] 🎤 Transcribing audio with Gemini...", audioUrl);
 
-    const openaiKey = process.env.OPENAI_API_KEY;
-    if (!openaiKey) {
-      console.warn("[BlooWebhook] OPENAI_API_KEY not configured");
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
+      console.warn("[BlooWebhook] GEMINI_API_KEY not configured");
       return null;
     }
 
-    // Download audio file
-    console.log("[BlooWebhook] Downloading audio file...");
+    // Use Gemini API with audio file URL
+    console.log("[BlooWebhook] Calling Gemini API with audio URL...");
+    const genAI = new GoogleGenerativeAI(geminiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+    // Upload the audio file using file upload API
+    console.log("[BlooWebhook] Downloading and uploading audio to Gemini...");
     const audioResponse = await fetch(audioUrl);
     if (!audioResponse.ok) {
       console.error("[BlooWebhook] Failed to download audio:", audioResponse.status);
@@ -27,42 +32,30 @@ async function transcribeAudio(audioUrl: string): Promise<string | null> {
     }
 
     const audioBuffer = await audioResponse.arrayBuffer();
+    const base64Audio = Buffer.from(audioBuffer).toString("base64");
     console.log("[BlooWebhook] Audio downloaded, size:", audioBuffer.byteLength, "bytes");
+    console.log("[BlooWebhook] Converted to base64 for Gemini");
 
-    // Create FormData for Whisper API
-    const formData = new FormData();
-    const audioBlob = new Blob([audioBuffer], { type: "audio/mpeg" });
-    formData.append("file", audioBlob, "voice.mp3");
-    formData.append("model", "whisper-1");
-    formData.append("language", "en");
-
-    // Call OpenAI Whisper API
-    console.log("[BlooWebhook] Calling OpenAI Whisper API...");
-    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${openaiKey}`,
+    // Call Gemini API with inline data
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          data: base64Audio,
+          mimeType: "audio/mpeg",
+        },
       },
-      body: formData,
-    });
+      "Please transcribe this audio message. Return only the transcribed text, nothing else.",
+    ]);
 
-    console.log("[BlooWebhook] Whisper response status:", response.status);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("[BlooWebhook] Whisper API error:", response.status, errorText);
-      return null;
-    }
-
-    const result = await response.json();
-    const transcribedText = result.text || result.transcript;
+    const response = result.response;
+    const transcribedText = response.text();
 
     if (transcribedText && transcribedText.trim()) {
       console.log("[BlooWebhook] ✅ Audio transcribed:", transcribedText.trim());
       return transcribedText.trim();
     }
 
-    console.warn("[BlooWebhook] No text in Whisper response");
+    console.warn("[BlooWebhook] No text in Gemini response");
     return null;
 
   } catch (error) {
