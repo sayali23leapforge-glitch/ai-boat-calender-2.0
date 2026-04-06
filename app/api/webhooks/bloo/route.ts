@@ -21,7 +21,7 @@ async function transcribeAudio(audioUrl: string): Promise<string | null> {
     // Use Gemini API with audio file URL
     console.log("[BlooWebhook] Calling Gemini API with audio URL...");
     const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
 
     // Upload the audio file using file upload API
     console.log("[BlooWebhook] Downloading and uploading audio to Gemini...");
