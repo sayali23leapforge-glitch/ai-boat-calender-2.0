@@ -5,20 +5,21 @@ import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
 
 /**
- * Transcribe audio file to text using Gemini API
- * Simplified fallback: Store in Supabase bucket if transcription not available
+ * Transcribe audio file to text using OpenAI Whisper API
+ * Simple and reliable approach
  */
 async function transcribeAudio(audioUrl: string): Promise<string | null> {
   try {
-    console.log("[BlooWebhook] 🎤 Attempting audio transcription...", audioUrl);
+    console.log("[BlooWebhook] 🎤 Transcribing audio with Whisper API...", audioUrl);
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.warn("[BlooWebhook] GEMINI_API_KEY not configured");
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (!openaiKey) {
+      console.warn("[BlooWebhook] OPENAI_API_KEY not configured");
       return null;
     }
 
     // Download audio file
+    console.log("[BlooWebhook] Downloading audio file...");
     const audioResponse = await fetch(audioUrl);
     if (!audioResponse.ok) {
       console.error("[BlooWebhook] Failed to download audio:", audioResponse.status);
@@ -26,44 +27,42 @@ async function transcribeAudio(audioUrl: string): Promise<string | null> {
     }
 
     const audioBuffer = await audioResponse.arrayBuffer();
-    const audioBase64 = Buffer.from(audioBuffer).toString("base64");
+    console.log("[BlooWebhook] Audio downloaded, size:", audioBuffer.byteLength, "bytes");
 
-    // Detect MIME type from URL
-    let mimeType = "audio/mpeg"; // default MP3
-    if (audioUrl.includes(".m4a")) mimeType = "audio/mp4";
-    else if (audioUrl.includes(".wav")) mimeType = "audio/wav";
-    else if (audioUrl.includes(".ogg")) mimeType = "audio/ogg";
-    else if (audioUrl.includes(".webm")) mimeType = "audio/webm";
+    // Create FormData for Whisper API
+    const formData = new FormData();
+    const audioBlob = new Blob([audioBuffer], { type: "audio/mpeg" });
+    formData.append("file", audioBlob, "voice.mp3");
+    formData.append("model", "whisper-1");
+    formData.append("language", "en");
 
-    // Try Gemini Pro API (using SDK which might have better model access)
-    console.log("[BlooWebhook] Trying Gemini SDK for transcription...");
-    try {
-      const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+    // Call OpenAI Whisper API
+    console.log("[BlooWebhook] Calling OpenAI Whisper API...");
+    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${openaiKey}`,
+      },
+      body: formData,
+    });
 
-      const response = await model.generateContent([
-        {
-          text: "Transcribe this audio. Reply with ONLY the transcribed text."
-        },
-        {
-          inlineData: {
-            data: audioBase64,
-            mimeType: mimeType,
-          },
-        },
-      ]);
+    console.log("[BlooWebhook] Whisper response status:", response.status);
 
-      const text = response.response.text();
-      if (text && text.trim()) {
-        console.log("[BlooWebhook] ✅ Transcribed:", text.trim());
-        return text.trim();
-      }
-    } catch (sdkError) {
-      console.log("[BlooWebhook] SDK transcription failed:", (sdkError as any).message);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("[BlooWebhook] Whisper API error:", response.status, errorText);
+      return null;
     }
 
-    // If transcription fails, just return null - let webhook handle it
-    console.log("[BlooWebhook] Audio transcription not available, returning null");
+    const result = await response.json();
+    const transcribedText = result.text || result.transcript;
+
+    if (transcribedText && transcribedText.trim()) {
+      console.log("[BlooWebhook] ✅ Audio transcribed:", transcribedText.trim());
+      return transcribedText.trim();
+    }
+
+    console.warn("[BlooWebhook] No text in Whisper response");
     return null;
 
   } catch (error) {
@@ -609,9 +608,9 @@ export async function POST(req: NextRequest) {
         console.log("[BlooWebhook] No text found, attempting audio transcription...");
         finalText = await transcribeAudio(audioUrl);
         if (finalText) {
-          console.log("[BlooWebhook] Successfully transcribed audio to:", finalText);
+          console.log("[BlooWebhook] ✅ Successfully transcribed audio to:", finalText);
         } else {
-          console.warn("[BlooWebhook] Audio transcription failed - will store voice message");
+          console.warn("[BlooWebhook] Audio transcription failed or not available");
         }
       }
     }
@@ -691,11 +690,9 @@ export async function POST(req: NextRequest) {
     const userId = profile.user_id;
     console.log("[BlooWebhook] User found:", userId);
 
-    // **HANDLE VOICE MESSAGE SEPARATELY**
+    // If no transcribed text but has audio, acknowledge and ask for text
     if (!finalText && audioUrl) {
-      console.log("[BlooWebhook] Processing voice message (no transcription available)");
-      
-      // Send acknowledgment to user
+      console.log("[BlooWebhook] Voice message received but transcription not available");
       const replyMessage = "🎤 Voice message received! Send a text message to create tasks, events, or goals.";
       
       sendBlooReply(normalizedPhone, replyMessage).catch(err =>
@@ -703,6 +700,15 @@ export async function POST(req: NextRequest) {
       );
       
       return NextResponse.json({ message: "Voice message acknowledged" }, { status: 200 });
+    }
+
+    // At this point, finalText must be non-null (guaranteed by earlier checks)
+    if (!finalText) {
+      console.log("[BlooWebhook] No valid text after all processing");
+      return NextResponse.json(
+        { message: "Could not process message" },
+        { status: 200 }
+      );
     }
 
     // Analyze message with Gemini AI
