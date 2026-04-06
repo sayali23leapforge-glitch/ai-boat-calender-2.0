@@ -5,12 +5,18 @@ import { getSupabaseAdminClient } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
 
 /**
- * Transcribe audio file to text using Google Cloud Speech-to-Text API
- * Much faster than OpenAI Whisper for this use case
+ * Transcribe audio file to text using Gemini API (native audio support)
+ * Fastest method with existing credentials
  */
 async function transcribeAudio(audioUrl: string): Promise<string | null> {
   try {
-    console.log("[BlooWebhook] 🎤 Transcribing audio using Google Speech-to-Text...", audioUrl);
+    console.log("[BlooWebhook] 🎤 Transcribing audio using Gemini API...", audioUrl);
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.warn("[BlooWebhook] ⚠️ GEMINI_API_KEY not configured, cannot transcribe");
+      return null;
+    }
 
     // Download audio file
     const audioResponse = await fetch(audioUrl);
@@ -22,53 +28,54 @@ async function transcribeAudio(audioUrl: string): Promise<string | null> {
     const audioBuffer = await audioResponse.arrayBuffer();
     const audioBase64 = Buffer.from(audioBuffer).toString("base64");
 
-    // Use Google Cloud Speech-to-Text API
-    const apiKey = process.env.GEMINI_API_KEY; // Reuse existing key
-    
-    if (!apiKey) {
-      console.warn("[BlooWebhook] ⚠️ GEMINI_API_KEY not configured, cannot transcribe");
-      return null;
-    }
+    // Detect MIME type from URL
+    let mimeType = "audio/mpeg"; // default MP3
+    if (audioUrl.includes(".m4a")) mimeType = "audio/mp4";
+    else if (audioUrl.includes(".wav")) mimeType = "audio/wav";
+    else if (audioUrl.includes(".ogg")) mimeType = "audio/ogg";
+    else if (audioUrl.includes(".webm")) mimeType = "audio/webm";
 
-    // Detect audio file type from URL
-    let audioMimeType = "audio/mpeg"; // default MP3
-    if (audioUrl.includes(".m4a")) audioMimeType = "audio/mp4";
-    else if (audioUrl.includes(".wav")) audioMimeType = "audio/wav";
-    else if (audioUrl.includes(".ogg")) audioMimeType = "audio/ogg";
-    else if (audioUrl.includes(".webm")) audioMimeType = "audio/webm";
+    // Use Gemini's native audio transcription via multipart API
+    const requestBody = {
+      contents: [
+        {
+          parts: [
+            {
+              text: "Transcribe this audio message. Reply with ONLY the transcribed text, nothing else."
+            },
+            {
+              inline_data: {
+                mime_type: mimeType,
+                data: audioBase64
+              }
+            }
+          ]
+        }
+      ]
+    };
 
-    const speechResponse = await fetch(
-      `https://speech.googleapis.com/v1/speech:recognize?key=${apiKey}`,
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          config: {
-            encoding: "MP3",
-            languageCode: "en-US",
-            sampleRateHertz: 16000,
-            enableAutomaticPunctuation: true,
-          },
-          audio: {
-            content: audioBase64,
-          },
-        }),
+        body: JSON.stringify(requestBody)
       }
     );
 
-    if (!speechResponse.ok) {
-      const error = await speechResponse.text();
-      console.error("[BlooWebhook] Speech-to-Text error:", error);
+    if (!response.ok) {
+      const error = await response.text();
+      console.error("[BlooWebhook] Gemini transcription error:", error);
       
-      // Fallback: use OpenAI Whisper if Google fails
-      return await transcribeWithWhisper(audioBase64, audioMimeType);
+      // Fallback to Whisper if Gemini fails
+      return await transcribeWithWhisper(audioBase64, mimeType);
     }
 
-    const result = await speechResponse.json();
-    const transcribedText = result.results?.[0]?.alternatives?.[0]?.transcript;
+    const result = await response.json();
+    const transcribedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (transcribedText) {
-      console.log("[BlooWebhook] ✅ Transcribed:", transcribedText);
+      console.log("[BlooWebhook] ✅ Gemini transcribed:", transcribedText);
       return transcribedText;
     }
 
