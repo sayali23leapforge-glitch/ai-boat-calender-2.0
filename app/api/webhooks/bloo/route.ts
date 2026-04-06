@@ -705,9 +705,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ message: "Voice message acknowledged" }, { status: 200 });
     }
 
-    const userId = profile.user_id;
-    console.log("[BlooWebhook] User found:", userId);
-
     // Analyze message with Gemini AI
     console.log("[BlooWebhook] Analyzing message with AI...");
     const aiAnalysis = await analyzeWithGemini(finalText);
