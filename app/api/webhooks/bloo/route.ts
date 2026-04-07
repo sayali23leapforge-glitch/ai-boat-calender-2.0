@@ -91,12 +91,19 @@ async function sendBlooReply(
       return false;
     }
 
-    // Normalize phone for Bloo API
+    // Normalize phone for Bloo API - keep the + prefix
     const normalizedPhone = recipientPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
+    console.log("[BlooWebhook] Normalized phone for Bloo:", normalizedPhone);
     
-    // Use Bloo v2 endpoint with phone number (NO organization ID needed!)
+    // Use Bloo v2 endpoint - format: /v2/api/chats/{phone}/messages
     const endpoint = `https://backend.blooio.com/v2/api/chats/${normalizedPhone}/messages`;
     console.log("[BlooWebhook] Endpoint:", endpoint);
+    console.log("[BlooWebhook] Message text:", message);
+
+    const payload = {
+      text: message,
+    };
+    console.log("[BlooWebhook] Posting payload:", JSON.stringify(payload));
 
     const response = await fetch(endpoint, {
       method: "POST",
@@ -104,9 +111,7 @@ async function sendBlooReply(
         "Content-Type": "application/json",
         "Authorization": `Bearer ${blooApiKey}`,
       },
-      body: JSON.stringify({
-        text: message,
-      }),
+      body: JSON.stringify(payload),
     });
 
     console.log("[BlooWebhook] Response status:", response.status);
@@ -117,7 +122,7 @@ async function sendBlooReply(
       console.log("[BlooWebhook] ✅ Bloo reply sent successfully!");
       return true;
     } else {
-      console.error("[BlooWebhook] ❌ Bloo API error:", responseText);
+      console.error("[BlooWebhook] ❌ Bloo API error:", response.status, responseText);
       return false;
     }
   } catch (error) {
@@ -1092,9 +1097,13 @@ export async function POST(req: NextRequest) {
     if (isCreationRequest) {
       console.log("[BlooWebhook] Existing user trying to create account");
       const existingAccountReply = `⚠️ Account already exists for this number! You're all set! 🎉`;
-      sendBlooReply(normalizedPhone, existingAccountReply).catch(err =>
-        console.error("[BlooWebhook] Failed to send existing account message:", err)
-      );
+      
+      // Await the reply to ensure it's sent before returning
+      const replySent = await sendBlooReply(normalizedPhone, existingAccountReply);
+      if (!replySent) {
+        console.error("[BlooWebhook] Failed to send existing account message");
+      }
+      
       return NextResponse.json({ message: "Account already exists" }, { status: 200 });
     }
 
