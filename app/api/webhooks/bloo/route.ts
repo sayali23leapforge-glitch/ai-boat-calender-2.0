@@ -95,12 +95,13 @@ async function sendBlooReply(
     const normalizedPhone = recipientPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
     console.log("[BlooWebhook] Normalized phone for Bloo:", normalizedPhone);
     
-    // Use Bloo v2 endpoint - format: /v2/api/chats/{phone}/messages
-    const endpoint = `https://backend.blooio.com/v2/api/chats/${normalizedPhone}/messages`;
+    // Try the direct message endpoint with external_id format
+    const endpoint = `https://backend.blooio.com/v1/messages`;
     console.log("[BlooWebhook] Endpoint:", endpoint);
     console.log("[BlooWebhook] Message text:", message);
 
     const payload = {
+      to: normalizedPhone,
       text: message,
     };
     console.log("[BlooWebhook] Posting payload:", JSON.stringify(payload));
@@ -123,7 +124,30 @@ async function sendBlooReply(
       return true;
     } else {
       console.error("[BlooWebhook] ❌ Bloo API error:", response.status, responseText);
-      return false;
+      
+      // Fallback: try v2 endpoint if v1 fails
+      console.log("[BlooWebhook] Trying fallback v2 endpoint...");
+      const fallbackEndpoint = `https://backend.blooio.com/v2/api/chats/${normalizedPhone}/messages`;
+      const fallbackResponse = await fetch(fallbackEndpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${blooApiKey}`,
+        },
+        body: JSON.stringify({ text: message }),
+      });
+      
+      console.log("[BlooWebhook] Fallback response status:", fallbackResponse.status);
+      const fallbackText = await fallbackResponse.text();
+      console.log("[BlooWebhook] Fallback response body:", fallbackText);
+      
+      if (fallbackResponse.ok) {
+        console.log("[BlooWebhook] ✅ Fallback reply sent successfully!");
+        return true;
+      } else {
+        console.error("[BlooWebhook] ❌ Fallback also failed");
+        return false;
+      }
     }
   } catch (error) {
     console.error("[BlooWebhook] Exception sending Bloo reply:", error);
