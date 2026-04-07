@@ -106,11 +106,9 @@ async function sendBlooReply(
       text: message,
     };
     
-    // If protocol is specified, try to maintain it
-    if (protocol && protocol === "imessage") {
-      payload.protocol = "imessage";
-      console.log("[BlooWebhook] Forcing iMessage protocol");
-    }
+    // Don't specify protocol - let BlueBubbles choose the best available protocol
+    // This avoids forcing iMessage on contacts that don't support it
+    console.log("[BlooWebhook] Letting BlueBubbles auto-select protocol");
     
     console.log("[BlooWebhook] Posting payload:", JSON.stringify(payload));
 
