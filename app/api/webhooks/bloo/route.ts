@@ -97,8 +97,12 @@ async function sendBlooReply(
     const normalizedPhone = recipientPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
     console.log("[BlooWebhook] Normalized phone for Bloo:", normalizedPhone);
     
-    // Use BlooIO v2 endpoint
-    const endpoint = `https://backend.blooio.com/v2/api/chats/${normalizedPhone}/messages`;
+    // URL encode the phone number (+ becomes %2B) as per BlooIO docs
+    const encodedPhone = encodeURIComponent(normalizedPhone);
+    console.log("[BlooWebhook] Encoded phone for URL:", encodedPhone);
+    
+    // Use BlooIO v2 endpoint with URL-encoded phone number
+    const endpoint = `https://backend.blooio.com/v2/api/chats/${encodedPhone}/messages`;
     console.log("[BlooWebhook] Endpoint:", endpoint);
     console.log("[BlooWebhook] Message text:", message);
 
