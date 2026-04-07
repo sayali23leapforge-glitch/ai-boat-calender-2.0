@@ -503,6 +503,224 @@ function parseMessageIntent(text: string): AIAnalysisResult {
 }
 
 /**
+ * Detect if message is trying to create an account
+ */
+function isAccountCreationMessage(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  
+  const creationKeywords = [
+    "create account",
+    "create my account",
+    "new account",
+    "signup",
+    "sign up",
+    "register",
+    "join",
+  ];
+  
+  for (const keyword of creationKeywords) {
+    if (lower.includes(keyword)) {
+      console.log(`[BlooWebhook] Detected account creation message: "${text}" (keyword: "${keyword}")`);
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+/**
+ * Detect if message looks like email and password format
+ */
+function parseEmailPassword(text: string): { email: string; password: string } | null {
+  // Try to parse "email password" format
+  const parts = text.trim().split(/\s+/);
+  
+  if (parts.length >= 2) {
+    const potentialEmail = parts[0];
+    const potentialPassword = parts.slice(1).join(" ");
+    
+    // Simple email validation
+    if (potentialEmail.includes("@") && potentialEmail.includes(".") && potentialPassword.length >= 6) {
+      console.log(`[BlooWebhook] Parsed email and password from: "${text}"`);
+      return {
+        email: potentialEmail,
+        password: potentialPassword,
+      };
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Check if there's a pending account creation request for this phone
+ */
+async function getPendingAccountCreation(
+  admin: any,
+  normalizedPhone: string
+): Promise<any | null> {
+  try {
+    console.log(`[BlooWebhook] Checking for pending account creation for: ${normalizedPhone}`);
+    
+    const { data, error } = await admin
+      .from("pending_account_creations")
+      .select("*")
+      .eq("phone", normalizedPhone)
+      .eq("status", "awaiting_email_password")
+      .maybeSingle();
+
+    if (error) {
+      console.error("[BlooWebhook] Error checking pending creation:", error);
+      return null;
+    }
+
+    if (data) {
+      console.log(`[BlooWebhook] Found pending account creation request`);
+      return data;
+    }
+
+    return null;
+  } catch (error) {
+    console.error("[BlooWebhook] Error in getPendingAccountCreation:", error);
+    return null;
+  }
+}
+
+/**
+ * Create a pending account creation request
+ */
+async function createPendingAccountCreation(
+  admin: any,
+  normalizedPhone: string
+): Promise<boolean> {
+  try {
+    console.log(`[BlooWebhook] Creating pending account creation request for: ${normalizedPhone}`);
+    
+    const { error } = await admin
+      .from("pending_account_creations")
+      .insert({
+        phone: normalizedPhone,
+        status: "awaiting_email_password",
+        created_at: new Date().toISOString(),
+      });
+
+    if (error) {
+      console.error("[BlooWebhook] Error creating pending request:", error);
+      return false;
+    }
+
+    console.log(`[BlooWebhook] Pending account creation request created`);
+    return true;
+  } catch (error) {
+    console.error("[BlooWebhook] Error in createPendingAccountCreation:", error);
+    return false;
+  }
+}
+
+/**
+ * Create a new user account
+ */
+async function createUserAccount(
+  email: string,
+  password: string,
+  phone: string
+): Promise<{ userId: string; error: string | null }> {
+  try {
+    console.log(`[BlooWebhook] Creating user account for email: ${email}`);
+    
+    const admin = getSupabaseAdminClient();
+
+    // Create auth user
+    const { data: { user }, error: authError } = await admin.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true, // Auto-confirm email
+    });
+
+    if (authError || !user) {
+      console.error("[BlooWebhook] Auth error:", authError);
+      return { userId: "", error: authError?.message || "Failed to create auth user" };
+    }
+
+    console.log(`[BlooWebhook] Auth user created: ${user.id}`);
+
+    // Create user profile
+    const { error: profileError } = await admin
+      .from("user_profiles")
+      .insert({
+        user_id: user.id,
+        email,
+        phone,
+        full_name: "",
+        avatar_url: null,
+        theme: "light",
+        language: "en",
+        timezone: "UTC",
+      });
+
+    if (profileError) {
+      console.error("[BlooWebhook] Profile error:", profileError);
+      return { userId: user.id, error: profileError.message };
+    }
+
+    console.log(`[BlooWebhook] User account created successfully: ${user.id}`);
+    return { userId: user.id, error: null };
+
+  } catch (error) {
+    console.error("[BlooWebhook] Error in createUserAccount:", error);
+    return { userId: "", error: String(error) };
+  }
+}
+
+/**
+ * Delete pending account creation request
+ */
+async function deletePendingAccountCreation(
+  admin: any,
+  id: string
+): Promise<boolean> {
+  try {
+    console.log(`[BlooWebhook] Deleting pending account creation: ${id}`);
+    
+    const { error } = await admin
+      .from("pending_account_creations")
+      .delete()
+      .eq("id", id);
+
+    if (error) {
+      console.error("[BlooWebhook] Error deleting pending request:", error);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error("[BlooWebhook] Error in deletePendingAccountCreation:", error);
+    return false;
+  }
+}
+
+/**
+ * Send welcome message to new user
+ */
+async function sendWelcomeMessage(normalizedPhone: string): Promise<boolean> {
+  const welcomeMessage = `Welcome to Calendar App! 🚀 Your calendar is now linked to this number.
+
+To create a task, just text me something like:
+• 'Remind me to call the team tomorrow at 10am' — creates a task
+• 'Set a goal to run 5 miles' — creates a goal  
+• 'Meeting tomorrow at 3pm' — creates an event
+
+What's on your mind today?`;
+
+  try {
+    return await sendBlooReply(normalizedPhone, welcomeMessage);
+  } catch (error) {
+    console.error("[BlooWebhook] Error sending welcome message:", error);
+    return false;
+  }
+}
+
+/**
  * Detect if a message is casual chat vs action-based (task/event/goal creation)
  */
 function isCasualMessage(text: string): boolean {
@@ -760,7 +978,100 @@ export async function POST(req: NextRequest) {
 
     if (!profile?.user_id) {
       console.log("[BlooWebhook] User not found for phone:", normalizedPhone);
-      // Return 200 OK as per requirements - don't error on missing user
+      
+      // ================================================================
+      // HANDLE ACCOUNT CREATION FLOW
+      // ================================================================
+      
+      // Ensure finalText is not null at this point
+      if (!finalText) {
+        console.log("[BlooWebhook] finalText is null, cannot check account creation");
+        return NextResponse.json({ message: "No text to process" }, { status: 200 });
+      }
+      
+      const isCreationRequest = isAccountCreationMessage(finalText);
+      
+      if (isCreationRequest) {
+        console.log("[BlooWebhook] Account creation requested");
+        
+        // Check if there's a pending account creation request
+        const pendingCreation = await getPendingAccountCreation(admin, normalizedPhone);
+        
+        if (pendingCreation) {
+          console.log("[BlooWebhook] Pending account creation found, checking for email/password");
+          
+          // User is responding with email and password
+          const credentials = parseEmailPassword(finalText);
+          
+          if (credentials) {
+            console.log("[BlooWebhook] Email and password provided, creating account...");
+            
+            // Create the account
+            const { userId, error: createError } = await createUserAccount(
+              credentials.email,
+              credentials.password,
+              normalizedPhone
+            );
+            
+            if (createError) {
+              console.error("[BlooWebhook] Account creation failed:", createError);
+              const errorReply = `❌ Account creation failed: ${createError}`;
+              sendBlooReply(normalizedPhone, errorReply).catch(err =>
+                console.error("[BlooWebhook] Failed to send error reply:", err)
+              );
+              
+              // Keep pending request for retry
+              return NextResponse.json({ message: "Account creation failed" }, { status: 200 });
+            }
+            
+            console.log("[BlooWebhook] Account created successfully:", userId);
+            
+            // Delete the pending request
+            await deletePendingAccountCreation(admin, pendingCreation.id);
+            
+            // Send welcome message
+            await sendWelcomeMessage(normalizedPhone);
+            
+            // Send confirmation
+            const confirmReply = `✓ Account created! Welcome to Calendar App! 🎉`;
+            sendBlooReply(normalizedPhone, confirmReply).catch(err =>
+              console.error("[BlooWebhook] Failed to send confirmation:", err)
+            );
+            
+            return NextResponse.json({ message: "Account created" }, { status: 200 });
+          } else {
+            console.log("[BlooWebhook] Invalid email/password format");
+            const retryReply = `❌ Invalid format. Please reply with: **email password** (e.g., user@example.com mypassword123)`;
+            sendBlooReply(normalizedPhone, retryReply).catch(err =>
+              console.error("[BlooWebhook] Failed to send retry request:", err)
+            );
+            
+            return NextResponse.json({ message: "Invalid format" }, { status: 200 });
+          }
+        } else {
+          console.log("[BlooWebhook] First-time account creation request");
+          
+          // First time - create pending request and ask for email/password
+          const created = await createPendingAccountCreation(admin, normalizedPhone);
+          
+          if (created) {
+            const askReply = `Welcome! 🎉 To create your account, reply with: **email password**\n\nExample: user@example.com mypassword123`;
+            sendBlooReply(normalizedPhone, askReply).catch(err =>
+              console.error("[BlooWebhook] Failed to send ask message:", err)
+            );
+          } else {
+            const errorReply = `❌ Failed to start account creation. Please try again later.`;
+            sendBlooReply(normalizedPhone, errorReply).catch(err =>
+              console.error("[BlooWebhook] Failed to send error:", err)
+            );
+          }
+          
+          return NextResponse.json({ message: "Account creation initiated" }, { status: 200 });
+        }
+      }
+      
+      // Not a creation request and user doesn't exist - just return
+      console.log("[BlooWebhook] Message from unregistered user, ignoring");
       return NextResponse.json(
         { message: "User not registered" },
         { status: 200 }
@@ -769,6 +1080,23 @@ export async function POST(req: NextRequest) {
 
     const userId = profile.user_id;
     console.log("[BlooWebhook] User found:", userId);
+
+    // Ensure finalText is not null
+    if (!finalText) {
+      console.log("[BlooWebhook] finalText is null for existing user, cannot process");
+      return NextResponse.json({ message: "No text to process" }, { status: 200 });
+    }
+
+    // If existing user is trying to create account, tell them account already exists
+    const isCreationRequest = isAccountCreationMessage(finalText);
+    if (isCreationRequest) {
+      console.log("[BlooWebhook] Existing user trying to create account");
+      const existingAccountReply = `⚠️ Account already exists for this number! You're all set! 🎉`;
+      sendBlooReply(normalizedPhone, existingAccountReply).catch(err =>
+        console.error("[BlooWebhook] Failed to send existing account message:", err)
+      );
+      return NextResponse.json({ message: "Account already exists" }, { status: 200 });
+    }
 
     // If no transcribed text but has audio, acknowledge and ask for text
     if (!finalText && audioUrl) {
