@@ -76,7 +76,8 @@ async function transcribeWithWhisper(audioBase64: string, mimeType: string): Pro
  */
 async function sendBlooReply(
   recipientPhone: string,
-  message: string
+  message: string,
+  protocol?: string
 ): Promise<boolean> {
   try {
     const blooApiKey = process.env.BLOO_API_KEY;
@@ -84,6 +85,7 @@ async function sendBlooReply(
     console.log("[BlooWebhook] ========== ATTEMPTING BLOO REPLY ==========");
     console.log("[BlooWebhook] Recipient:", recipientPhone);
     console.log("[BlooWebhook] Message:", message);
+    console.log("[BlooWebhook] Protocol:", protocol || "default");
     console.log("[BlooWebhook] Has API Key:", !!blooApiKey);
 
     if (!blooApiKey) {
@@ -95,15 +97,21 @@ async function sendBlooReply(
     const normalizedPhone = recipientPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
     console.log("[BlooWebhook] Normalized phone for Bloo:", normalizedPhone);
     
-    // Try the direct message endpoint with external_id format
-    const endpoint = `https://backend.blooio.com/v1/messages`;
+    // Use v2 endpoint with proper parameters for replying on the same channel
+    const endpoint = `https://backend.blooio.com/v2/api/chats/${normalizedPhone}/messages`;
     console.log("[BlooWebhook] Endpoint:", endpoint);
     console.log("[BlooWebhook] Message text:", message);
 
-    const payload = {
-      to: normalizedPhone,
+    const payload: any = {
       text: message,
     };
+    
+    // If protocol is specified, try to maintain it
+    if (protocol && protocol === "imessage") {
+      payload.protocol = "imessage";
+      console.log("[BlooWebhook] Forcing iMessage protocol");
+    }
+    
     console.log("[BlooWebhook] Posting payload:", JSON.stringify(payload));
 
     const response = await fetch(endpoint, {
@@ -124,30 +132,7 @@ async function sendBlooReply(
       return true;
     } else {
       console.error("[BlooWebhook] ❌ Bloo API error:", response.status, responseText);
-      
-      // Fallback: try v2 endpoint if v1 fails
-      console.log("[BlooWebhook] Trying fallback v2 endpoint...");
-      const fallbackEndpoint = `https://backend.blooio.com/v2/api/chats/${normalizedPhone}/messages`;
-      const fallbackResponse = await fetch(fallbackEndpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${blooApiKey}`,
-        },
-        body: JSON.stringify({ text: message }),
-      });
-      
-      console.log("[BlooWebhook] Fallback response status:", fallbackResponse.status);
-      const fallbackText = await fallbackResponse.text();
-      console.log("[BlooWebhook] Fallback response body:", fallbackText);
-      
-      if (fallbackResponse.ok) {
-        console.log("[BlooWebhook] ✅ Fallback reply sent successfully!");
-        return true;
-      } else {
-        console.error("[BlooWebhook] ❌ Fallback also failed");
-        return false;
-      }
+      return false;
     }
   } catch (error) {
     console.error("[BlooWebhook] Exception sending Bloo reply:", error);
@@ -919,6 +904,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ message: "Event ignored" }, { status: 200 });
     }
 
+    // Extract protocol to maintain same channel for replies
+    const protocol = (payload as any).protocol as string | undefined;
+    console.log("[BlooWebhook] Incoming protocol:", protocol || "not specified");
+
     // Extract message and sender
     const rawText = extractText(payload);
     const rawSender = extractSenderPhone(payload);
@@ -1018,85 +1007,84 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ message: "No text to process" }, { status: 200 });
       }
       
+      // FIRST: Check if there's a pending account creation request (in case user is replying with email/password)
+      const pendingCreation = await getPendingAccountCreation(admin, normalizedPhone);
+      
+      if (pendingCreation) {
+        console.log("[BlooWebhook] Pending account creation found, checking for email/password");
+        
+        // User is responding with email and password
+        const credentials = parseEmailPassword(finalText);
+        
+        if (credentials) {
+          console.log("[BlooWebhook] Email and password provided, creating account...");
+          
+          // Create the account
+          const { userId, error: createError } = await createUserAccount(
+            credentials.email,
+            credentials.password,
+            normalizedPhone
+          );
+          
+          if (createError) {
+            console.error("[BlooWebhook] Account creation failed:", createError);
+            const errorReply = `❌ Account creation failed: ${createError}`;
+            sendBlooReply(normalizedPhone, errorReply).catch(err =>
+              console.error("[BlooWebhook] Failed to send error reply:", err)
+            );
+            
+            // Keep pending request for retry
+            return NextResponse.json({ message: "Account creation failed" }, { status: 200 });
+          }
+          
+          console.log("[BlooWebhook] Account created successfully:", userId);
+          
+          // Delete the pending request
+          await deletePendingAccountCreation(admin, pendingCreation.id);
+          
+          // Send welcome message
+          await sendWelcomeMessage(normalizedPhone);
+          
+          // Send confirmation
+          const confirmReply = `✓ Account created! Welcome to Calendar App! 🎉`;
+          sendBlooReply(normalizedPhone, confirmReply).catch(err =>
+            console.error("[BlooWebhook] Failed to send confirmation:", err)
+          );
+          
+          return NextResponse.json({ message: "Account created" }, { status: 200 });
+        } else {
+          console.log("[BlooWebhook] Invalid email/password format");
+          const retryReply = `❌ Invalid format. Please reply with: **email password** (e.g., user@example.com mypassword123)`;
+          sendBlooReply(normalizedPhone, retryReply).catch(err =>
+            console.error("[BlooWebhook] Failed to send retry request:", err)
+          );
+          
+          return NextResponse.json({ message: "Invalid format" }, { status: 200 });
+        }
+      }
+      
+      // SECOND: Check if this is an account creation request
       const isCreationRequest = isAccountCreationMessage(finalText);
       
       if (isCreationRequest) {
-        console.log("[BlooWebhook] Account creation requested");
+        console.log("[BlooWebhook] First-time account creation request");
         
-        // Check if there's a pending account creation request
-        const pendingCreation = await getPendingAccountCreation(admin, normalizedPhone);
+        // Create pending request and ask for email/password
+        const created = await createPendingAccountCreation(admin, normalizedPhone);
         
-        if (pendingCreation) {
-          console.log("[BlooWebhook] Pending account creation found, checking for email/password");
-          
-          // User is responding with email and password
-          const credentials = parseEmailPassword(finalText);
-          
-          if (credentials) {
-            console.log("[BlooWebhook] Email and password provided, creating account...");
-            
-            // Create the account
-            const { userId, error: createError } = await createUserAccount(
-              credentials.email,
-              credentials.password,
-              normalizedPhone
-            );
-            
-            if (createError) {
-              console.error("[BlooWebhook] Account creation failed:", createError);
-              const errorReply = `❌ Account creation failed: ${createError}`;
-              sendBlooReply(normalizedPhone, errorReply).catch(err =>
-                console.error("[BlooWebhook] Failed to send error reply:", err)
-              );
-              
-              // Keep pending request for retry
-              return NextResponse.json({ message: "Account creation failed" }, { status: 200 });
-            }
-            
-            console.log("[BlooWebhook] Account created successfully:", userId);
-            
-            // Delete the pending request
-            await deletePendingAccountCreation(admin, pendingCreation.id);
-            
-            // Send welcome message
-            await sendWelcomeMessage(normalizedPhone);
-            
-            // Send confirmation
-            const confirmReply = `✓ Account created! Welcome to Calendar App! 🎉`;
-            sendBlooReply(normalizedPhone, confirmReply).catch(err =>
-              console.error("[BlooWebhook] Failed to send confirmation:", err)
-            );
-            
-            return NextResponse.json({ message: "Account created" }, { status: 200 });
-          } else {
-            console.log("[BlooWebhook] Invalid email/password format");
-            const retryReply = `❌ Invalid format. Please reply with: **email password** (e.g., user@example.com mypassword123)`;
-            sendBlooReply(normalizedPhone, retryReply).catch(err =>
-              console.error("[BlooWebhook] Failed to send retry request:", err)
-            );
-            
-            return NextResponse.json({ message: "Invalid format" }, { status: 200 });
-          }
+        if (created) {
+          const askReply = `Welcome! 🎉 To create your account, reply with: **email password**\n\nExample: user@example.com mypassword123`;
+          sendBlooReply(normalizedPhone, askReply).catch(err =>
+            console.error("[BlooWebhook] Failed to send ask message:", err)
+          );
         } else {
-          console.log("[BlooWebhook] First-time account creation request");
-          
-          // First time - create pending request and ask for email/password
-          const created = await createPendingAccountCreation(admin, normalizedPhone);
-          
-          if (created) {
-            const askReply = `Welcome! 🎉 To create your account, reply with: **email password**\n\nExample: user@example.com mypassword123`;
-            sendBlooReply(normalizedPhone, askReply).catch(err =>
-              console.error("[BlooWebhook] Failed to send ask message:", err)
-            );
-          } else {
-            const errorReply = `❌ Failed to start account creation. Please try again later.`;
-            sendBlooReply(normalizedPhone, errorReply).catch(err =>
-              console.error("[BlooWebhook] Failed to send error:", err)
-            );
-          }
-          
-          return NextResponse.json({ message: "Account creation initiated" }, { status: 200 });
+          const errorReply = `❌ Failed to start account creation. Please try again later.`;
+          sendBlooReply(normalizedPhone, errorReply).catch(err =>
+            console.error("[BlooWebhook] Failed to send error:", err)
+          );
         }
+        
+        return NextResponse.json({ message: "Account creation initiated" }, { status: 200 });
       }
       
       // Not a creation request and user doesn't exist - just return
@@ -1123,7 +1111,7 @@ export async function POST(req: NextRequest) {
       const existingAccountReply = `⚠️ Account already exists for this number! You're all set! 🎉`;
       
       // Await the reply to ensure it's sent before returning
-      const replySent = await sendBlooReply(normalizedPhone, existingAccountReply);
+      const replySent = await sendBlooReply(normalizedPhone, existingAccountReply, protocol);
       if (!replySent) {
         console.error("[BlooWebhook] Failed to send existing account message");
       }
@@ -1163,17 +1151,18 @@ export async function POST(req: NextRequest) {
       try {
         const casualReply = await generateCasualReply(finalText);
         
-        // Send casual reply in background (don't wait)
-        sendBlooReply(normalizedPhone, casualReply).catch(err =>
-          console.error("[BlooWebhook] Failed to send casual reply:", err)
-        );
+        // Send casual reply with protocol to maintain same channel
+        const replySent = await sendBlooReply(normalizedPhone, casualReply, protocol);
+        if (!replySent) {
+          console.error("[BlooWebhook] Failed to send casual reply");
+        }
         
         console.log("[BlooWebhook] Casual reply sent, returning 200");
         return NextResponse.json({ message: "Casual reply sent" }, { status: 200 });
       } catch (error) {
         console.error("[BlooWebhook] Error handling casual message:", error);
         // Fallback: still return success
-        sendBlooReply(normalizedPhone, "Hey! 👋").catch(err =>
+        await sendBlooReply(normalizedPhone, "Hey! 👋", protocol).catch(err =>
           console.error("[BlooWebhook] Failed to send fallback reply:", err)
         );
         return NextResponse.json({ message: "Casual reply sent" }, { status: 200 });
@@ -1296,9 +1285,9 @@ export async function POST(req: NextRequest) {
 
         console.log("[BlooWebhook] Task created successfully");
         
-        // Send confirmation message back to user (in background, don't wait)
+        // Send confirmation message back to user with protocol to maintain iMessage
         const replyMessage = `✓ Task created: ${aiAnalysis.title}`;
-        sendBlooReply(normalizedPhone, replyMessage).catch(err => 
+        await sendBlooReply(normalizedPhone, replyMessage, protocol).catch(err => 
           console.error("[BlooWebhook] Failed to send reply:", err)
         );
         
@@ -1333,9 +1322,9 @@ export async function POST(req: NextRequest) {
 
         console.log("[BlooWebhook] Goal created successfully");
         
-        // Send confirmation message back to user (in background, don't wait)
+        // Send confirmation message back to user with protocol to maintain iMessage
         const replyMessage = `✓ Goal created: ${aiAnalysis.title}`;
-        sendBlooReply(normalizedPhone, replyMessage).catch(err => 
+        await sendBlooReply(normalizedPhone, replyMessage, protocol).catch(err => 
           console.error("[BlooWebhook] Failed to send reply:", err)
         );
         
@@ -1387,9 +1376,9 @@ export async function POST(req: NextRequest) {
 
         console.log("[BlooWebhook] Event created successfully");
         
-        // Send confirmation message back to user (in background, don't wait)
+        // Send confirmation message back to user with protocol to maintain iMessage
         const replyMessage = `✓ Event created: ${aiAnalysis.title}`;
-        sendBlooReply(normalizedPhone, replyMessage).catch(err => 
+        await sendBlooReply(normalizedPhone, replyMessage, protocol).catch(err => 
           console.error("[BlooWebhook] Failed to send reply:", err)
         );
         
