@@ -898,6 +898,22 @@ export async function POST(req: NextRequest) {
     const eventType = (payload as any).event;
     console.log(`[BlooWebhook] Event type: ${eventType}`);
 
+    // Log message failures for debugging
+    if (eventType === "message.failed") {
+      const errorCode = (payload as any).error_code;
+      const errorMessage = (payload as any).error_message;
+      const failedMessageId = (payload as any).message_id;
+      console.error(`[BlooWebhook] ❌ MESSAGE FAILED - ID: ${failedMessageId}`);
+      console.error(`[BlooWebhook] Error Code: ${errorCode}`);
+      console.error(`[BlooWebhook] Error Message: ${errorMessage}`);
+      console.error(`[BlooWebhook] This means BlooIO could not send the message to BlueBubbles`);
+      console.error(`[BlooWebhook] Possible causes:`);
+      console.error(`[BlooWebhook]  1. BlueBubbles server on Mac is offline`);
+      console.error(`[BlooWebhook]  2. Cloudflare tunnel is down`);
+      console.error(`[BlooWebhook]  3. Invalid BlueBubbles credentials in BlooIO`);
+      return NextResponse.json({ message: "Message failed" }, { status: 200 });
+    }
+
     if (eventType && eventType !== "message.received") {
       console.log(`[BlooWebhook] Ignoring event type: ${eventType} (only processing message.received)`);
       return NextResponse.json({ message: "Event ignored" }, { status: 200 });
