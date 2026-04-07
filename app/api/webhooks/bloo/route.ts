@@ -106,11 +106,10 @@ async function sendBlooReply(
       text: message,
     };
     
-    // If protocol is specified, include it
-    if (protocol && protocol === "imessage") {
-      payload.protocol = "imessage";
-      console.log("[BlooWebhook] Using iMessage protocol");
-    }
+    // DO NOT specify protocol - let BlooIO/BlueBubbles auto-select the best protocol
+    // This avoids forcing iMessage on contacts that don't support it
+    // BlooIO will intelligently choose SMS, iMessage, or other protocols based on contact capabilities
+    console.log("[BlooWebhook] Letting BlooIO auto-select protocol");
     
     console.log("[BlooWebhook] Posting payload:", JSON.stringify(payload));
 
