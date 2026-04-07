@@ -80,12 +80,14 @@ async function sendBlooReply(
   protocol?: string
 ): Promise<boolean> {
   try {
+    const blueBubblesUrl = process.env.NEXT_PUBLIC_BLUEBUBBLES_BASE_URL;
     const blooApiKey = process.env.BLOO_API_KEY;
 
     console.log("[BlooWebhook] ========== ATTEMPTING BLOO REPLY ==========");
     console.log("[BlooWebhook] Recipient:", recipientPhone);
     console.log("[BlooWebhook] Message:", message);
     console.log("[BlooWebhook] Protocol:", protocol || "default");
+    console.log("[BlooWebhook] BlueBubbles URL:", blueBubblesUrl);
     console.log("[BlooWebhook] Has API Key:", !!blooApiKey);
 
     if (!blooApiKey) {
@@ -93,22 +95,29 @@ async function sendBlooReply(
       return false;
     }
 
-    // Normalize phone for Bloo API - keep the + prefix
+    if (!blueBubblesUrl) {
+      console.error("[BlooWebhook] ❌ NEXT_PUBLIC_BLUEBUBBLES_BASE_URL not configured!");
+      return false;
+    }
+
+    // Normalize phone for BlueBubbles API - keep the + prefix
     const normalizedPhone = recipientPhone.replace(/\s+/g, "").replace(/[^\d+]/g, "");
-    console.log("[BlooWebhook] Normalized phone for Bloo:", normalizedPhone);
+    console.log("[BlooWebhook] Normalized phone for BlueBubbles:", normalizedPhone);
     
-    // Use v2 endpoint with proper parameters for replying on the same channel
-    const endpoint = `https://backend.blooio.com/v2/api/chats/${normalizedPhone}/messages`;
+    // Use local BlueBubbles endpoint instead of cloud endpoint
+    const endpoint = `${blueBubblesUrl}/api/v1/chat/${normalizedPhone}/message`;
     console.log("[BlooWebhook] Endpoint:", endpoint);
     console.log("[BlooWebhook] Message text:", message);
 
     const payload: any = {
-      text: message,
+      message: message,
     };
     
-    // Don't specify protocol - let BlueBubbles choose the best available protocol
-    // This avoids forcing iMessage on contacts that don't support it
-    console.log("[BlooWebhook] Letting BlueBubbles auto-select protocol");
+    // If protocol is specified, include it
+    if (protocol) {
+      payload.method = protocol;
+      console.log("[BlooWebhook] Using protocol:", protocol);
+    }
     
     console.log("[BlooWebhook] Posting payload:", JSON.stringify(payload));
 
